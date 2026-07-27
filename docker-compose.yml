@@ -65,6 +65,12 @@ services:
       AUTH_TOKEN_SECRET: "${AUTH_TOKEN_SECRET:-}"
       AUTH_PASSWORD: "${AUTH_PASSWORD:-}"
       ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
+      # Downtime → Telegram alerts (empty token/chat = disabled)
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      TELEGRAM_PROXY: "${TELEGRAM_PROXY:-}"
+      DOWNTIME_ALERT_SEC: "${DOWNTIME_ALERT_SEC:-300}"
+      DOWNTIME_REMINDER_SEC: "${DOWNTIME_REMINDER_SEC:-0}"
       # Set to 1 when publicapi.ramzinex.com is TCP-blocked on the host network
       RAMZINEX_DISABLE: "${RAMZINEX_DISABLE:-}"
       RAMZINEX_API_BASE: "${RAMZINEX_API_BASE:-}"

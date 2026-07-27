@@ -32,6 +32,7 @@ from app.connectors import close_client
 from app.demo_seed import seed_if_needed
 from app.diagnostics import (connectivity_test, environment_report,
                              install_log_capture, ring_handler)
+from app.downtime_alert import downtime_alerter
 from app.intelligence import arb_ledger, inventory_requirements, tob_tracker
 from app.metrics import metrics_engine
 from app.news import news_service
@@ -109,7 +110,7 @@ _loop_tasks: Dict[str, asyncio.Task] = {}
 _shutting_down = False
 _STARTED_AT = time.time()
 
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.2.0"
 
 
 def _resolve_build_info() -> Dict[str, str]:
@@ -229,6 +230,8 @@ async def _heartbeat_loop() -> None:
                 log.error("WATCHDOG: market data has not updated in %.0fs — the "
                           "poll loop is stalling; check exchange connectivity "
                           "from this host", now - mh["last_success"])
+            # Telegram alert when data goes stale (UI up but feeds dead) / recovers
+            await downtime_alerter.check(market_aggregator)
         except asyncio.CancelledError:
             raise
         except Exception:
