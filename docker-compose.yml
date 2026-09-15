@@ -69,6 +69,9 @@ services:
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
       TELEGRAM_PROXY: "${TELEGRAM_PROXY:-}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-db,localhost,127.0.0.1}"
       DOWNTIME_ALERT_SEC: "${DOWNTIME_ALERT_SEC:-300}"
       DOWNTIME_REMINDER_SEC: "${DOWNTIME_REMINDER_SEC:-0}"
       # Set to 1 when publicapi.ramzinex.com is TCP-blocked on the host network
