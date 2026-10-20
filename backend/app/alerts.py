@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from . import db
 from .metrics import metrics_engine
-from .models import MarketSnapshot
+from .models import MarketSnapshot, is_usable
 
 log = logging.getLogger("terminal.alerts")
 
@@ -114,8 +114,7 @@ class AlertEngine:
             for base, quote in aggregator.pairs():
                 if not self._matches(rule, base):
                     continue
-                books = {ex: b for (ex, b_), b in aggregator.books.items() if b_ == base}
-                ops = metrics_engine.arbitrage(base, quote, books)
+                ops = metrics_engine.arbitrage(base, quote, aggregator.usable_books(base))
                 if ops and ops[0].net_pct > thr:
                     o = ops[0]
                     self._fire(rule,
@@ -125,7 +124,8 @@ class AlertEngine:
 
         elif rtype == "deviation_above":
             for base, snaps in by_asset.items():
-                live = [s for s in snaps if s.mid > 0]
+                # offline last-good quotes and flagged outliers are not markets
+                live = [s for s in snaps if is_usable(s)]
                 if len(live) < 3:
                     continue
                 med = statistics.median(s.mid for s in live)

@@ -4,7 +4,7 @@ import { apiDelete, apiGet, apiPatch, apiPost, usePoll } from '../api';
 import { Badge, ChangePill, EmptyState, ScoreBar } from '../components';
 import { IconBell, IconZap } from '../icons';
 import { useLang } from '../i18n';
-import { fmtCompact, fmtNum, RULE_TYPES, timeAgo } from '../util';
+import { fmtCompact, fmtNum, fmtPct, fmtQty, premiumColor, RULE_TYPES, timeAgo } from '../util';
 
 export default function Desk() {
   const { t, lang } = useLang();
@@ -54,26 +54,35 @@ export default function Desk() {
         {/* arbitrage scanner */}
         <div className="card" style={{ padding: 0 }}>
           <h3 style={{ padding: '14px 16px 0' }}>{t('topArbitrage')}</h3>
+          <div className="tbl-scroll">
           <table className="tbl">
             <thead><tr>
-              <th>{t('asset')}</th><th>{t('buyAt')}</th><th>{t('sellAt')}</th>
-              <th>{t('net')}</th><th>{t('size')}</th><th>{t('profit')}</th>
+              <th>{t('asset')}</th><th>{t('buyAt')} → {t('sellAt')}</th>
+              <th>{t('net')}</th><th>{t('profit')}</th>
             </tr></thead>
             <tbody>
               {arb.filter((o) => o.net_pct > 0).slice(0, 8).map((o, i) => (
                 <tr key={i}>
                   <td><b>{o.base}</b></td>
-                  <td style={{ color: 'var(--green)' }}>{o.buy_exchange}</td>
-                  <td style={{ color: 'var(--red)' }}>{o.sell_exchange}</td>
+                  <td>
+                    <span style={{ color: 'var(--green)' }}>{o.buy_exchange}</span>
+                    {' → '}
+                    <span style={{ color: 'var(--red)' }}>{o.sell_exchange}</span>
+                  </td>
                   <td className="num" style={{ color: 'var(--green)', fontWeight: 700 }}>
                     {o.net_pct.toFixed(3)}%
                   </td>
-                  <td className="num">{o.max_size_base} {o.base}</td>
-                  <td className="num">{fmtCompact(o.est_profit_quote)}</td>
+                  <td className="num">
+                    {fmtCompact(o.est_profit_quote)}
+                    <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+                      {t('size')}: {fmtQty(o.max_size_base, o.max_size_base)} {o.base}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
           {!arb.filter((o) => o.net_pct > 0).length &&
             <EmptyState icon={<IconZap />} title={t('noData')} hint={t('arbHint')} />}
         </div>
@@ -93,8 +102,8 @@ export default function Desk() {
                   <td className="num">{fmtNum(r.price, 0)}</td>
                   <td><ChangePill value={r.change_1h} /></td>
                   <td><ChangePill value={r.change_24h} /></td>
-                  <td className="num" style={{ color: 'var(--amber)' }}>
-                    {r.premium_pct != null ? r.premium_pct.toFixed(2) + '%' : '—'}
+                  <td className="num" style={{ color: premiumColor(r.premium_pct) }}>
+                    {fmtPct(r.premium_pct)}
                   </td>
                 </tr>
               ))}

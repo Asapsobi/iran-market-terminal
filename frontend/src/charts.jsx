@@ -1,6 +1,7 @@
 // Chart wrappers around lightweight-charts (bundled locally, TradingView OSS).
 import { createChart, ColorType } from 'lightweight-charts';
 import { useEffect, useRef } from 'react';
+import { fmtTmnAxis } from './util';
 
 // All chart timestamps are unix seconds (UTC). lightweight-charts would render
 // them as UTC, so we format both the axis ticks and the crosshair in Iran time.
@@ -36,7 +37,29 @@ const BASE_OPTS = {
   },
   crosshair: { mode: 1 },
   autoSize: true,
+  // A plain mouse wheel scrolls the PAGE; zoom is Ctrl/⌘ + wheel (see
+  // ctrlWheelZoom), drag-to-pan and pinch still work.
+  handleScroll: { mouseWheel: false, pressedMouseMove: true,
+                  horzTouchDrag: true, vertTouchDrag: false },
+  handleScale: { mouseWheel: false, pinch: true, axisPressedMouseMove: true },
 };
+
+// TMN prices: "21.373B" / "262,612" on the axis and last-price label — no ".00".
+const TMN_FORMAT = { type: 'custom', formatter: fmtTmnAxis, minMove: 1 };
+
+/** Ctrl/⌘ + wheel zooms the time axis; returns the cleanup function. */
+function ctrlWheelZoom(el, chart) {
+  const onWheel = (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;          // let the page scroll
+    e.preventDefault();
+    const ts = chart.timeScale();
+    const spacing = ts.options().barSpacing;
+    const next = Math.min(60, Math.max(0.5, spacing * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    ts.applyOptions({ barSpacing: next });
+  };
+  el.addEventListener('wheel', onWheel, { passive: false });
+  return () => el.removeEventListener('wheel', onWheel);
+}
 
 function useChart(containerRef, build, deps) {
   useEffect(() => {
@@ -45,8 +68,41 @@ function useChart(containerRef, build, deps) {
     const chart = createChart(el, BASE_OPTS);
     build(chart);
     chart.timeScale().fitContent();
-    return () => chart.remove();
+    const off = ctrlWheelZoom(el, chart);
+    return () => { off(); chart.remove(); };
   }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/** Insert whitespace points for missing buckets so data gaps render as empty
+ *  space instead of a flat line that looks like a frozen price. */
+function withGaps(points, resolution) {
+  if (!resolution || points.length < 2) return points;
+  const out = [];
+  let budget = 3000;   // never explode a long outage into millions of points
+  for (let i = 0; i < points.length; i++) {
+    if (i > 0) {
+      const gap = points[i].time - points[i - 1].time;
+      if (gap > resolution * 1.5) {
+        for (let t = points[i - 1].time + resolution; t < points[i].time && budget > 0;
+             t += resolution, budget--) {
+          out.push({ time: t });
+        }
+      }
+    }
+    out.push(points[i]);
+  }
+  return out;
+}
+
+function inferResolution(candles) {
+  const diffs = [];
+  for (let i = 1; i < candles.length && diffs.length < 50; i++) {
+    const d = Math.floor(candles[i].ts) - Math.floor(candles[i - 1].ts);
+    if (d > 0) diffs.push(d);
+  }
+  if (!diffs.length) return 0;
+  diffs.sort((a, b) => a - b);
+  return diffs[0];
 }
 
 /* --------------------------- indicators ---------------------------- */
@@ -94,9 +150,12 @@ const fmtLegend = (v) =>
   v >= 1e9 ? (v / 1e9).toFixed(3) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
   : v >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : v.toFixed(2);
 
-export function CandleChart({ candles, height = 380, overlays = {}, compare = null }) {
+export function CandleChart({ candles, height = 380, overlays = {}, compare = null,
+                              resolution, livePrice = null }) {
   const ref = useRef(null);
   const legendRef = useRef(null);
+  const seriesRef = useRef(null);
+  const lastBarRef = useRef(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -104,12 +163,15 @@ export function CandleChart({ candles, height = 380, overlays = {}, compare = nu
     const series = chart.addCandlestickSeries({
       upColor: '#16c784', downColor: '#ea3943',
       wickUpColor: '#16c784', wickDownColor: '#ea3943',
-      borderVisible: false,
+      borderVisible: false, priceFormat: TMN_FORMAT,
     });
-    const data = dedupe((candles || []).map((c) => ({
+    const res = resolution || inferResolution(candles || []);
+    const data = withGaps(dedupe((candles || []).map((c) => ({
       time: Math.floor(c.ts), open: c.open, high: c.high, low: c.low, close: c.close,
-    })));
+    }))), res);
     series.setData(data);
+    seriesRef.current = series;
+    lastBarRef.current = [...data].reverse().find((d) => d.close !== undefined) || null;
 
     const volumes = (candles || []).filter((c) => c.volume > 0);
     if (volumes.length) {
@@ -125,11 +187,11 @@ export function CandleChart({ candles, height = 380, overlays = {}, compare = nu
 
     const addOverlay = (pts, color, title) => {
       const line = chart.addLineSeries({
-        color, lineWidth: 1.4, title,
+        color, lineWidth: 1.4, title, priceFormat: TMN_FORMAT,
         priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false,
       });
-      line.setData(dedupe(pts));
+      line.setData(withGaps(dedupe(pts), res));
     };
     if (candles?.length > 5) {
       if (overlays.sma) addOverlay(smaSeries(candles), '#4a9eff', 'MA20');
@@ -157,8 +219,19 @@ export function CandleChart({ candles, height = 380, overlays = {}, compare = nu
     });
 
     chart.timeScale().fitContent();
-    return () => chart.remove();
-  }, [candles, height, overlays.sma, overlays.ema, overlays.vwap, compare]);
+    const off = ctrlWheelZoom(el, chart);
+    return () => { off(); seriesRef.current = null; chart.remove(); };
+  }, [candles, height, overlays.sma, overlays.ema, overlays.vwap, compare, resolution]);
+
+  // Keep the last candle's close on the live price between candle reloads
+  // (without rebuilding the chart, so zoom/pan survive).
+  useEffect(() => {
+    const s = seriesRef.current, bar = lastBarRef.current;
+    if (!s || !bar || !livePrice) return;
+    const next = { ...bar, close: livePrice,
+                   high: Math.max(bar.high, livePrice), low: Math.min(bar.low, livePrice) };
+    try { s.update(next); lastBarRef.current = next; } catch { /* stale ref */ }
+  }, [livePrice, candles]);
   return (
     <div ref={ref} className="chart-box" style={{ height }}>
       <div ref={legendRef} className="chart-legend" />

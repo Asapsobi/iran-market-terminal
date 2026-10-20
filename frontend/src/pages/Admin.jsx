@@ -241,7 +241,7 @@ export default function Admin({ meta, refreshMeta }) {
     ['market_interval', 'marketInterval'], ['snapshot_interval', 'snapshotInterval'],
     ['news_interval', 'newsInterval'], ['calendar_interval', 'calendarInterval'],
     ['request_timeout', 'requestTimeout'], ['ui_refresh_interval', 'uiRefresh'],
-    ['arb_min_edge_pct', 'arbMinEdge'],
+    ['arb_min_edge_pct', 'arbMinEdge'], ['stale_latency_ms', 'staleLatency'],
   ];
 
   return (

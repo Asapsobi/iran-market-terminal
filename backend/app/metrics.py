@@ -19,9 +19,18 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 from . import db
 from .config import taker_fee_pct
-from .models import Anomaly, ArbitrageOpportunity, MarketSnapshot, OrderBook
+from .models import Anomaly, ArbitrageOpportunity, MarketSnapshot, OrderBook, is_usable
 
 RING_MAXLEN = 40_000  # ~33h at a 3s cycle
+
+# Change windows anchor on a FIXED bucket boundary (window -> bucket size), so
+# the starting price only moves when a new bucket starts instead of sliding
+# (and picking a different noisy sample) on every request.
+CHANGE_ANCHOR_BUCKET = {3600: 60, 86400: 300, 7 * 86400: 3600}
+
+# Spreads below this are locked books (e.g. bid one toman under the ask on a
+# 21B TMN BTC price = 0.000000005%), not a real spread — kept out of stats.
+MIN_REAL_SPREAD_PCT = 1e-4
 
 Point = Tuple[float, float]                      # (ts, value)
 ExKey = Tuple[str, str]                          # (exchange, base)
@@ -33,6 +42,7 @@ class MetricsEngine:
         self.spread_rings: Dict[ExKey, Deque[Point]] = {}
         self.depth_rings: Dict[ExKey, Deque[Point]] = {}       # total depth notional
         self.composite_rings: Dict[str, Deque[Point]] = {}     # per asset
+        self._anchor_cache: Dict[Tuple[str, float, float], Optional[float]] = {}
 
     # ------------------------------------------------------------- ingest --
     def ingest(self, snap: MarketSnapshot) -> None:
@@ -40,8 +50,11 @@ class MetricsEngine:
         if snap.mid > 0:
             self.mid_rings.setdefault(key, deque(maxlen=RING_MAXLEN)).append(
                 (snap.timestamp, snap.mid))
-            self.spread_rings.setdefault(key, deque(maxlen=RING_MAXLEN)).append(
-                (snap.timestamp, snap.spread_pct))
+            # Spread stats only from fresh, real books: locked/crossed (<= 0)
+            # and stale/delayed books would drag MIN to 0.000%.
+            if snap.status == "connected" and snap.spread_pct >= MIN_REAL_SPREAD_PCT:
+                self.spread_rings.setdefault(key, deque(maxlen=RING_MAXLEN)).append(
+                    (snap.timestamp, snap.spread_pct))
             self.depth_rings.setdefault(key, deque(maxlen=RING_MAXLEN)).append(
                 (snap.timestamp, snap.bid_depth_quote + snap.ask_depth_quote))
 
@@ -70,17 +83,36 @@ class MetricsEngine:
                 lo = mid_i + 1
         return best
 
-    def change_pct(self, base: str, quote: str, window_sec: float) -> Optional[float]:
-        ring = self.composite_rings.get(base)
-        now = time.time()
-        current = ring[-1][1] if ring else None
-        if current is None:
-            return None
+    def anchor_price(self, base: str, quote: str, window_sec: float) -> Optional[float]:
+        """Composite price at the start of the fixed bucket `window_sec` ago."""
+        bucket = CHANGE_ANCHOR_BUCKET.get(int(window_sec), 300)
+        anchor = time.time() - window_sec
+        anchor -= anchor % bucket
+        key = (base, window_sec, anchor)
+        if key in self._anchor_cache:
+            return self._anchor_cache[key]
         past: Optional[float] = None
-        if ring:
-            past = self._value_at(ring, now - window_sec)
-        if past is None:  # fall back to persisted snapshots (7D etc.)
-            past = db.get_mid_at(base, quote, now - window_sec, tolerance=window_sec * 0.1)
+        ring = self.composite_rings.get(base)
+        if ring and ring[0][0] <= anchor + bucket:   # ring reaches into the bucket
+            past = self._value_at(ring, anchor)
+        if past is None:   # older than the ring: stored composite candles
+            past = db.get_composite_open_at(base, quote, anchor, anchor + bucket)
+        if past is None:   # then the nearest snapshot to the same fixed point
+            past = db.get_mid_at(base, quote, anchor, tolerance=max(bucket, window_sec * 0.02))
+        if len(self._anchor_cache) > 500:
+            self._anchor_cache.clear()
+        if past is not None:   # don't cache misses — data may arrive later
+            self._anchor_cache[key] = past
+        return past
+
+    def change_pct(self, base: str, quote: str, window_sec: float,
+                   current: Optional[float] = None) -> Optional[float]:
+        if current is None:
+            ring = self.composite_rings.get(base)
+            current = ring[-1][1] if ring else None
+        if not current:
+            return None
+        past = self.anchor_price(base, quote, window_sec)
         if not past:
             return None
         return (current - past) / past * 100.0
@@ -104,7 +136,8 @@ class MetricsEngine:
                      window_sec: float = 3600.0) -> Dict[str, Optional[float]]:
         ring = self.spread_rings.get((exchange, base))
         now = time.time()
-        values = [v for ts, v in (ring or []) if ts >= now - window_sec and v >= 0]
+        values = [v for ts, v in (ring or [])
+                  if ts >= now - window_sec and v >= MIN_REAL_SPREAD_PCT]
         if not values:
             return {"current": None, "avg": None, "min": None, "max": None, "stdev": None}
         return {
@@ -167,7 +200,12 @@ class MetricsEngine:
     @staticmethod
     def arbitrage(base: str, quote: str,
                   books: Dict[str, OrderBook]) -> List[ArbitrageOpportunity]:
-        """Depth-aware, fee-aware cross-exchange opportunities."""
+        """Depth-aware, fee-aware gap for EVERY venue pair (buy one, sell the other).
+
+        Pairs without an executable edge are still returned — gross and net come
+        from the top of book (net < 0 when fees eat the gap) with size/profit 0 —
+        so the UI can show the gap instead of an empty "collecting" state.
+        Callers that act on opportunities filter on net_pct / max_size_base."""
         now = time.time()
         out: List[ArbitrageOpportunity] = []
         names = [n for n, b in books.items() if b.bids and b.asks]
@@ -203,12 +241,16 @@ class MetricsEngine:
                     if b_qty <= 1e-12:
                         bi += 1
                         b_qty = bids[bi][1] if bi < len(bids) else 0.0
-                if size <= 0:
-                    continue
                 buy_p = books[buy_ex].best_ask
                 sell_p = books[sell_ex].best_bid
+                if buy_p <= 0 or sell_p <= 0:
+                    continue
                 gross = (sell_p - buy_p) / buy_p * 100.0
-                net = profit / cost * 100.0 if cost > 0 else 0.0
+                if size > 0:
+                    net = profit / cost * 100.0
+                else:   # no executable edge: top-of-book net after both fees
+                    eff_buy, eff_sell = buy_p * (1 + fb), sell_p * (1 - fs)
+                    net = (eff_sell - eff_buy) / eff_buy * 100.0
                 out.append(ArbitrageOpportunity(
                     base=base, quote=quote,
                     buy_exchange=buy_ex, sell_exchange=sell_ex,
@@ -268,7 +310,7 @@ class MetricsEngine:
         now = time.time()
         anomalies: List[Anomaly] = []
         for base, snaps in snaps_by_asset.items():
-            live = [s for s in snaps if s.mid > 0 and s.status != "offline"]
+            live = [s for s in snaps if is_usable(s)]
 
             # 1. sudden composite price spike (5-minute window)
             move = self.composite_move_pct(base, 300)
@@ -304,6 +346,19 @@ class MetricsEngine:
                         message=f"{s.exchange} {base}: API unreachable — feed offline",
                         severity="critical", value=0.0, timestamp=now))
                     continue
+                if s.status == "outlier":
+                    anomalies.append(Anomaly(
+                        kind="bad_price", exchange=s.exchange, base=base,
+                        message=(f"{s.exchange} {base} price is far off the other venues"
+                                 f" — excluded from composite and arbitrage"),
+                        severity="warning", value=0.0, timestamp=now))
+                    continue
+                if s.status == "stale":
+                    anomalies.append(Anomaly(
+                        kind="stale_feed", exchange=s.exchange, base=base,
+                        message=(f"{s.exchange} {base} responds slowly"
+                                 f" ({s.latency_ms:.0f}ms) — excluded until it recovers"),
+                        severity="warning", value=round(s.latency_ms, 1), timestamp=now))
                 age = now - s.timestamp if s.timestamp else 1e9
                 if age > stale_after_sec:
                     anomalies.append(Anomaly(

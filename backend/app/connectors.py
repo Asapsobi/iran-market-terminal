@@ -610,8 +610,10 @@ class RamzinexConnector(BaseExchangeConnector):
     # Numeric pair ids (IRR-quoted) for markets we poll.
     PAIR_IDS: Dict[str, int] = {
         "BTC": 2, "ETH": 3, "USDT": 11,
-        # common extras (best-effort; unknown ids are skipped via supports_pair)
-        "XRP": 9, "LTC": 4, "BNB": 13,
+        # common extras (best-effort; unknown ids are skipped via supports_pair).
+        # LTC=4 / BNB=13 were wrong guesses (4 quoted an XRP-level price, 13 a
+        # few hundred TMN for BNB) — removed until the real ids are confirmed.
+        "XRP": 9,
     }
 
     def supports_pair(self, base: str) -> bool:

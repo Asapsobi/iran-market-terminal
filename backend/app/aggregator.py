@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import statistics
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -23,7 +24,7 @@ from .connectors import (BaseExchangeConnector, DemoConnector, ReferenceConnecto
                          force_recycle_client, is_rate_limited, maybe_recycle_client,
                          MAX_INFLIGHT)
 from .metrics import metrics_engine
-from .models import MarketSnapshot, MarketStatus, OrderBook, TickerStats
+from .models import MarketSnapshot, MarketStatus, OrderBook, TickerStats, is_usable
 from .settings import settings_store
 from .volume_estimator import volume_estimator
 
@@ -32,6 +33,22 @@ log = logging.getLogger("terminal.aggregator")
 STALE_AFTER_MS = 15_000
 # Keep last-good quote as "delayed" for this long before flipping to offline.
 SOFT_FAIL_GRACE_SEC = 120.0
+# A venue whose mid sits this far from the cross-venue median is a bad feed
+# (wrong pair id / unit), not a market — flag it and keep it out of composites.
+OUTLIER_DEV_PCT = 20.0
+_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,12}$")
+
+
+def clean_base(raw: str, quote: str = "TMN") -> str:
+    """Normalize a user-entered base symbol: 'usoon/tmn', 'BTC-IRT' -> 'USOON', 'BTC'.
+    Returns '' when the result is still not a plain ticker."""
+    base = (raw or "").strip().upper()
+    for sep in ("/", "-", "_", " "):
+        base = base.split(sep)[0]
+    for q in {quote.upper(), "TMN", "IRT", "IRR", "TOMAN", "RLS"}:
+        if base.endswith(q) and len(base) > len(q) + 1:
+            base = base[: -len(q)]
+    return base if _SYMBOL_RE.match(base) else ""
 # Cap concurrent venue fetches so we never oversubscribe the httpx pool.
 _GLOBAL_SEM: Optional[asyncio.Semaphore] = None
 _EX_SEMS: Dict[str, asyncio.Semaphore] = {}
@@ -78,6 +95,8 @@ class MarketAggregator:
                                             {"BTC": "bitcoin", "ETH": "ethereum",
                                              "USDT": "tether"}))
         self._unresolvable: set = set()
+        self._unresolvable_ts: float = time.time()
+        self._ref_missing: List[str] = []
         self._vol_warned: set = set()
         self._fetch_warned: Dict[Tuple[str, str], float] = {}
         self.reload_connectors()
@@ -92,8 +111,11 @@ class MarketAggregator:
         quote = CONFIG.get("quote_currency", "TMN")
         bases = [a.upper() for a in CONFIG.get("assets", [])]
         for row in db.get_custom_pairs():
-            if row.get("enabled") and row["base"] not in bases:
-                bases.append(row["base"])
+            # Older builds stored whatever was typed (e.g. "USOON/TMN"); clean it
+            # here so the quote never ends up inside the base symbol.
+            base = clean_base(row["base"], quote)
+            if row.get("enabled") and base and base not in bases:
+                bases.append(base)
         return [(b, quote) for b in bases]
 
     # -------------------------------------------------------------- cycle --
@@ -140,6 +162,7 @@ class MarketAggregator:
             # wait_for requests cannot leak sockets into the next wave.
             force_recycle_client()
 
+        self._flag_outliers()
         self._compute_composites(pairs)
         self.cycle_count += 1
         elapsed = time.time() - t0
@@ -185,10 +208,12 @@ class MarketAggregator:
         elif connector.exchange_name == "Exir":
             eff_timeout = max(timeout, 15.0)
 
-        started = time.time()
         try:
             async with _global_sem():
                 async with _ex_sem(connector.exchange_name):
+                    # Time the venue only — not the wait for a semaphore slot,
+                    # which made every venue look multi-second slow.
+                    started = time.time()
                     book = await asyncio.wait_for(
                         connector.fetch_order_book(base), timeout=eff_timeout)
                     latency_ms = (time.time() - started) * 1000
@@ -243,6 +268,12 @@ class MarketAggregator:
             ask_depth = book.depth_notional("ask")
             total = bid_depth + ask_depth
             age_ms = (time.time() - book.timestamp) * 1000
+            if latency_ms > settings_store.get().stale_latency_ms:
+                status = MarketStatus.STALE.value
+            elif age_ms > STALE_AFTER_MS:
+                status = MarketStatus.DELAYED.value
+            else:
+                status = MarketStatus.CONNECTED.value
             snap = MarketSnapshot(
                 exchange=connector.exchange_name, base=base, quote=quote,
                 best_bid=best_bid, best_ask=best_ask, mid=mid,
@@ -255,8 +286,7 @@ class MarketAggregator:
                 last_price=stats.last_price or mid,
                 latency_ms=round(latency_ms, 1),
                 timestamp=book.timestamp or time.time(),
-                status=(MarketStatus.DELAYED.value if age_ms > STALE_AFTER_MS
-                        else MarketStatus.CONNECTED.value),
+                status=status,
             )
             self.books[key] = book
             self.market_state[key] = snap
@@ -288,9 +318,12 @@ class MarketAggregator:
         prev = self.market_state.get(key)
         if prev and prev.mid > 0:
             age = now_warn - (prev.timestamp or 0.0)
-            prev.status = (MarketStatus.DELAYED.value
-                           if age < SOFT_FAIL_GRACE_SEC
-                           else MarketStatus.OFFLINE.value)
+            if age >= SOFT_FAIL_GRACE_SEC:
+                prev.status = MarketStatus.OFFLINE.value
+            elif prev.status not in (MarketStatus.STALE.value, MarketStatus.OUTLIER.value):
+                # a stale/outlier quote must not become usable just because
+                # the next fetch failed
+                prev.status = MarketStatus.DELAYED.value
         else:
             self.market_state[key] = MarketSnapshot(
                 exchange=exchange, base=base, quote=quote,
@@ -312,6 +345,11 @@ class MarketAggregator:
                 if cg_id:
                     self._reference.set_id(asset, cg_id)
             # auto-resolve one unknown asset per refresh (rate-limit friendly)
+            # A failed lookup (often a CoinGecko 429) used to blacklist the asset
+            # for the life of the process; retry it after a cool-down instead.
+            if time.time() - self._unresolvable_ts > 1800:
+                self._unresolvable.clear()
+                self._unresolvable_ts = time.time()
             unknown = [b for b in bases
                        if b not in self._reference.id_map and b not in self._unresolvable]
             if unknown:
@@ -325,15 +363,54 @@ class MarketAggregator:
                     self._unresolvable.add(asset)
                     log.warning("reference: could not resolve %s (set a manual"
                                 " coingecko_id in Admin)", asset)
-            self.usd_reference = await self._reference.fetch_usd_prices()
+            prices = await self._reference.fetch_usd_prices()
+            missing = sorted(b for b in bases if b not in prices)
+            if missing and missing != self._ref_missing:
+                log.warning("reference: no global USD price for %s — premium will"
+                            " show '—' (check the coingecko id in Admin)", missing)
+            self._ref_missing = missing
+            # keep the last good price for an asset CoinGecko skipped this time
+            self.usd_reference = {**self.usd_reference, **prices}
             self.usd_reference_ts = time.time()
         except Exception as exc:
             log.debug("reference fetch failed: %s", exc)
 
     # --------------------------------------------------------- composites --
+    def _flag_outliers(self) -> None:
+        """Mark venues whose mid is >OUTLIER_DEV_PCT off the median of the other
+        venues (needs 3+ quotes to know which one is wrong); clear the flag once
+        the price is back in line."""
+        now = time.time()
+        for base, snaps in self.snapshots_by_asset().items():
+            cands = [s for s in snaps if s.mid > 0 and s.status in (
+                MarketStatus.CONNECTED.value, MarketStatus.DELAYED.value,
+                MarketStatus.OUTLIER.value)]
+            if len(cands) < 3:
+                continue
+            med = statistics.median(s.mid for s in cands)
+            for s in cands:
+                dev = abs(s.mid - med) / med * 100
+                if dev > OUTLIER_DEV_PCT:
+                    if s.status != MarketStatus.OUTLIER.value:
+                        log.warning("%s %s mid %.6g is %.1f%% off the cross-venue median"
+                                    " %.6g — excluded as an outlier (bad pair mapping?)",
+                                    s.exchange, base, s.mid, dev, med)
+                    s.status = MarketStatus.OUTLIER.value
+                elif s.status == MarketStatus.OUTLIER.value:
+                    s.status = (MarketStatus.DELAYED.value
+                                if (now - s.timestamp) * 1000 > STALE_AFTER_MS
+                                else MarketStatus.CONNECTED.value)
+
+    def usable_snaps(self, base: str) -> List[MarketSnapshot]:
+        return [s for (ex, b), s in self.market_state.items() if b == base and is_usable(s)]
+
+    def usable_books(self, base: str) -> Dict[str, OrderBook]:
+        """Order books of venues that are live, fast enough and not outliers."""
+        ok = {s.exchange for s in self.usable_snaps(base)}
+        return {ex: b for (ex, b_), b in self.books.items() if b_ == base and ex in ok}
+
     def composite_mid(self, base: str) -> Optional[float]:
-        mids = [s.mid for (ex, b), s in self.market_state.items()
-                if b == base and s.mid > 0 and s.status != MarketStatus.OFFLINE.value]
+        mids = [s.mid for s in self.usable_snaps(base)]
         return statistics.fmean(mids) if mids else None
 
     def _compute_composites(self, pairs: List[Tuple[str, str]]) -> None:
@@ -358,7 +435,7 @@ class MarketAggregator:
         snap_rows = []
         comp_rows = []
         for (ex, base), s in self.market_state.items():
-            if s.mid <= 0 or s.status == MarketStatus.OFFLINE.value:
+            if not is_usable(s):
                 continue
             snap_rows.append((ex, base, s.quote, s.best_bid, s.best_ask, s.mid,
                               s.spread_pct, s.bid_depth_quote, s.ask_depth_quote,
@@ -367,8 +444,7 @@ class MarketAggregator:
             mid = self.composite_mid(base)
             if not mid:
                 continue
-            live = [s for (ex, b), s in self.market_state.items()
-                    if b == base and s.mid > 0]
+            live = self.usable_snaps(base)
             best_bid = max((s.best_bid for s in live), default=0.0)
             best_ask = min((s.best_ask for s in live if s.best_ask > 0), default=0.0)
             volume = sum(s.volume_24h_quote for s in live)

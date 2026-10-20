@@ -113,6 +113,13 @@ const DICT = {
     roleAdmin: 'Admin', roleViewer: 'Viewer',
     resetPassword: 'Reset password',
     changeCreds: 'Change username / password', keepPw: 'leave empty to keep current',
+    stale: 'Stale', outlier: 'Bad price',
+    staleTip: 'Responds slower than the staleness threshold (Admin) — excluded from composite and arbitrage',
+    outlierTip: 'Price is far off the other venues (likely a wrong pair mapping) — excluded from composite and arbitrage',
+    staleLatency: 'Stale above latency (ms)',
+    vsPeg: 'vs $1 peg', pegTip: 'USDT is the base currency (no premium) — global deviation from $1',
+    zoomHint: 'Ctrl/⌘ + scroll to zoom · drag to pan',
+    best: 'Best', showAll: 'Show all', showLess: 'Show less', in24h: 'in 24h',
   },
   fa: {
     overview: 'بازارها', analytics: 'تحلیل‌ها', desk: 'میز معاملات',
@@ -225,6 +232,13 @@ const DICT = {
     roleAdmin: 'مدیر', roleViewer: 'بیننده',
     resetPassword: 'بازنشانی رمز',
     changeCreds: 'تغییر نام کاربری / رمز', keepPw: 'برای حفظ رمز فعلی خالی بگذارید',
+    stale: 'کُند', outlier: 'قیمت نامعتبر',
+    staleTip: 'پاسخ کندتر از آستانه (مدیریت) — از شاخص ترکیبی و آربیتراژ حذف شد',
+    outlierTip: 'قیمت با سایر صرافی‌ها فاصله زیادی دارد (احتمالاً نگاشت اشتباه جفت‌ارز) — از شاخص ترکیبی و آربیتراژ حذف شد',
+    staleLatency: 'آستانه کندی (میلی‌ثانیه)',
+    vsPeg: 'نسبت به ۱ دلار', pegTip: 'تتر ارز پایه است (پرمیوم ندارد) — انحراف جهانی از ۱ دلار',
+    zoomHint: 'برای بزرگنمایی Ctrl/⌘ + اسکرول · برای جابجایی بکشید',
+    best: 'بهترین', showAll: 'نمایش همه', showLess: 'نمایش کمتر', in24h: 'در ۲۴ ساعت',
   },
 };
 

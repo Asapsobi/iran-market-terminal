@@ -141,10 +141,13 @@ export default function NotificationCenter({ markets = [], calendar = [], venues
     setSettings({ ...settings, nodes: nodes.length === allVenues.length ? [] : nodes });
   };
 
+  // Rendered inside .topbar-right: the gear is a normal flex item (no longer a
+  // fixed overlay sitting on top of the user menu); only the toasts are fixed.
   return (
-    <div className="notifc">
+    <>
       <div className="notifc-head">
-        <button className="notifc-gear" title={t('notifSettings')}
+        <button className="icon-btn notifc-gear" title={t('notifSettings')}
+                aria-label={t('notifSettings')}
                 onClick={() => setGearOpen((o) => !o)}>⚙</button>
         {gearOpen && (
           <div className="notifc-settings">
@@ -185,16 +188,18 @@ export default function NotificationCenter({ markets = [], calendar = [], venues
         )}
       </div>
 
-      {items.map((n) => (
-        <div key={n.id} className={`notifc-item ${n.severity}`}>
-          <span style={{ fontSize: 15, flexShrink: 0 }}>{icon(n.severity)}</span>
-          <span style={{ minWidth: 0 }}>
-            <b style={{ fontSize: 12.5 }}>{n.title}</b>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', wordBreak: 'break-word' }}>{n.message}</div>
-          </span>
-          <button className="notifc-x" onClick={() => dismiss(n.id)} aria-label="dismiss">×</button>
-        </div>
-      ))}
-    </div>
+      <div className="notifc-stack">
+        {items.map((n) => (
+          <div key={n.id} className={`notifc-item ${n.severity}`}>
+            <span style={{ fontSize: 15, flexShrink: 0 }}>{icon(n.severity)}</span>
+            <span style={{ minWidth: 0 }}>
+              <b style={{ fontSize: 12.5 }}>{n.title}</b>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', wordBreak: 'break-word' }}>{n.message}</div>
+            </span>
+            <button className="notifc-x" onClick={() => dismiss(n.id)} aria-label="dismiss">×</button>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }

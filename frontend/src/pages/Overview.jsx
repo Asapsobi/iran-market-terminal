@@ -6,7 +6,10 @@ import { AssetIcon, ChangePill, FlashNum, ScoreBar, Sparkline, SortableTh,
          StatusDot, sortRows } from '../components';
 import { IconChevronDown, IconChevronRight, IconStar } from '../icons';
 import { useLang } from '../i18n';
-import { fmtCompact, fmtNum, fmtPct } from '../util';
+import { fmtCompact, fmtNum, fmtPct, premiumColor } from '../util';
+
+// never render the quote twice ("USOON/TMN /TMN") even if a stored base has it
+const baseOnly = (base) => String(base).split('/')[0];
 
 const loadFavs = () => {
   try { return new Set(JSON.parse(localStorage.getItem('favs') || '[]')); }
@@ -68,7 +71,9 @@ export default function Overview({ onSelectAsset }) {
         <input className="input" style={{ maxWidth: 220 }} value={search}
                placeholder={t('searchAssets')} onChange={(e) => setSearch(e.target.value)} />
       </div>
-      <div className="card" style={{ padding: 0 }}>
+      {/* .fit: columns drop by width (hide-*) so the table fits and the
+          sticky header can stick to the page under the topbar */}
+      <div className="card fit" style={{ padding: 0 }}>
         <table className="tbl">
           <thead>
             <tr>
@@ -76,16 +81,16 @@ export default function Overview({ onSelectAsset }) {
               <SortableTh label={t('rank')} col="rank" sort={sort} setSort={setSort} />
               <th>{t('asset')}</th>
               <SortableTh label={t('price')} col="price" sort={sort} setSort={setSort} />
-              <SortableTh label={t('change1h')} col="c1h" sort={sort} setSort={setSort} />
+              <SortableTh label={t('change1h')} col="c1h" sort={sort} setSort={setSort} className="hide-lg" />
               <SortableTh label={t('change24h')} col="c24h" sort={sort} setSort={setSort} />
               <SortableTh label={t('change7d')} col="c7d" sort={sort} setSort={setSort} />
               <SortableTh label={t('premium')} col="premium" sort={sort} setSort={setSort} />
-              <SortableTh label={t('spread')} col="spread" sort={sort} setSort={setSort} />
-              <SortableTh label={t('liquidity')} col="liq" sort={sort} setSort={setSort} />
+              <SortableTh label={t('spread')} col="spread" sort={sort} setSort={setSort} className="hide-lg" />
+              <SortableTh label={t('liquidity')} col="liq" sort={sort} setSort={setSort} className="hide-md" />
               <SortableTh label={t('volume24')} col="vol" sort={sort} setSort={setSort} />
               <th>{t('bestBuy')}</th>
               <th>{t('bestSell')}</th>
-              <th className="hide-sm">{t('last7d')}</th>
+              <th className="hide-xl">{t('last7d')}</th>
               <th style={{ width: 30 }} />
             </tr>
           </thead>
@@ -104,9 +109,9 @@ export default function Overview({ onSelectAsset }) {
                   <td style={{ color: 'var(--text-3)' }}>{r.rank}</td>
                   <td>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
-                      <AssetIcon symbol={r.base} />
+                      <AssetIcon symbol={baseOnly(r.base)} />
                       <span>
-                        <b>{r.base}</b>
+                        <b>{baseOnly(r.base)}</b>
                         <span style={{ color: 'var(--text-3)', fontSize: 11.5 }}> /{r.quote}</span>
                         <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
                           {r.exchanges_live}/{r.exchanges_total} {t('exchanges')}
@@ -115,15 +120,21 @@ export default function Overview({ onSelectAsset }) {
                     </span>
                   </td>
                   <td><FlashNum value={r.price} bold /></td>
-                  <td><ChangePill value={r.change_1h} /></td>
+                  <td className="hide-lg"><ChangePill value={r.change_1h} /></td>
                   <td><ChangePill value={r.change_24h} /></td>
                   <td><ChangePill value={r.change_7d} /></td>
-                  <td className="num" title={t('premiumTip')}
-                      style={{ color: (r.premium_pct ?? 0) > 0 ? 'var(--amber)' : 'var(--text-2)' }}>
-                    {fmtPct(r.premium_pct)}
-                  </td>
-                  <td className="num">{r.min_spread_pct != null ? r.min_spread_pct.toFixed(2) + '%' : '—'}</td>
-                  <td><ScoreBar score={r.liquidity_score} /></td>
+                  {r.base === 'USDT' ? (
+                    <td className="num" title={t('pegTip')} style={{ color: premiumColor(r.peg_dev_pct) }}>
+                      {fmtPct(r.peg_dev_pct)}
+                      <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{t('vsPeg')}</div>
+                    </td>
+                  ) : (
+                    <td className="num" title={t('premiumTip')} style={{ color: premiumColor(r.premium_pct) }}>
+                      {fmtPct(r.premium_pct)}
+                    </td>
+                  )}
+                  <td className="num hide-lg">{r.min_spread_pct != null ? r.min_spread_pct.toFixed(2) + '%' : '—'}</td>
+                  <td className="hide-md"><ScoreBar score={r.liquidity_score} /></td>
                   <td className="num">{fmtCompact(r.volume_24h_quote)}</td>
                   <td>
                     {r.best_ask ? (
@@ -143,7 +154,7 @@ export default function Overview({ onSelectAsset }) {
                         </div>
                       </span>) : '—'}
                   </td>
-                  <td className="hide-sm"><Sparkline data={r.sparkline} /></td>
+                  <td className="hide-xl"><Sparkline data={r.sparkline} width={110} /></td>
                   <td>
                     <button className="icon-btn" style={{ padding: 3 }}
                             aria-label={`expand ${r.base}`}

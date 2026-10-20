@@ -84,3 +84,42 @@ def test_candle_resample():
     assert len(out) == 2
     assert out[0]["open"] == 0 and out[0]["close"] == 240.5
     assert out[0]["volume"] == 5
+
+
+def test_arbitrage_lists_negative_net_gap():
+    # 0.43% gross gap, ~0.55% of fees: still listed, with net < 0 and no size
+    books = {
+        "Wallex": OrderBook(bids=[[99.8, 1]], asks=[[100.0, 1]], timestamp=time.time()),
+        "Bitpin": OrderBook(bids=[[100.43, 1]], asks=[[100.6, 1]], timestamp=time.time()),
+    }
+    ops = MetricsEngine.arbitrage("BTC", "TMN", books)
+    assert len(ops) == 2   # both directions
+    o = next(x for x in ops if x.buy_exchange == "Wallex")
+    assert abs(o.gross_pct - 0.43) < 1e-6
+    assert o.net_pct < 0 and o.max_size_base == 0 and o.est_profit_quote == 0
+
+
+def test_spread_stats_ignore_locked_and_stale_books():
+    eng = MetricsEngine()
+    now = time.time()
+    for spread, status in ((0.0, "connected"), (0.2, "connected"),
+                           (0.05, "delayed"), (0.3, "connected")):
+        eng.ingest(MarketSnapshot(exchange="Nobitex", base="BTC", quote="TMN", mid=100,
+                                  spread_pct=spread, status=status, timestamp=now))
+    st = eng.spread_stats("Nobitex", "BTC", 3600)
+    assert st["min"] == 0.2 and st["max"] == 0.3
+
+
+def test_change_anchor_is_fixed_within_bucket(monkeypatch):
+    eng = MetricsEngine()
+    now = time.time()
+    for i in range(400):   # 2h of noisy 20s samples
+        eng.ingest_composite("BTC", now - 7200 + i * 20, 100 + (i % 7) * 0.3)
+    first = eng.anchor_price("BTC", "TMN", 3600)
+    monkeypatch.setattr(time, "time", lambda: now + 15)   # same 60s bucket or next
+    second = eng.anchor_price("BTC", "TMN", 3600)
+    anchor_a = (now - 3600) - (now - 3600) % 60
+    anchor_b = (now + 15 - 3600) - (now + 15 - 3600) % 60
+    assert first is not None
+    if anchor_a == anchor_b:
+        assert first == second

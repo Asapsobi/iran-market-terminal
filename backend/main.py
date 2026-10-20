@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from app import db
 from app.auth import auth_service
-from app.aggregator import market_aggregator
+from app.aggregator import clean_base, market_aggregator
 from app.alerts import alert_engine
 from app.candles import candle_service, HISTORY_WINDOWS, TF_SPEC
 from app.config import CONFIG, exchange_color, taker_fee_pct
@@ -34,7 +34,7 @@ from app.diagnostics import (connectivity_test, environment_report,
                              install_log_capture, ring_handler)
 from app.downtime_alert import downtime_alerter
 from app.intelligence import arb_ledger, inventory_requirements, tob_tracker
-from app.metrics import metrics_engine
+from app.metrics import MIN_REAL_SPREAD_PCT, metrics_engine
 from app.news import news_service
 from app.premium import METHODS, premium_series
 from app.settings import settings_store
@@ -598,7 +598,7 @@ def get_meta() -> Dict[str, Any]:
              "color": "#8A93A6", "custom": True}
             for row in db.get_custom_exchanges()
         ],
-        "assets": [b for b, _q in market_aggregator.pairs()],
+        "assets": _selectable_assets(),
         "usd_reference": market_aggregator.usd_reference,
         "usd_reference_ts": market_aggregator.usd_reference_ts,
         "news_refreshed_at": news_service.news_refreshed_at,
@@ -614,6 +614,22 @@ def get_meta() -> Dict[str, Any]:
     }
 
 
+def _selectable_assets() -> List[str]:
+    """Assets for the selector bars: hide ones no venue has ever quoted
+    (misconfigured / unsupported symbols that would only show '0/N')."""
+    by_asset = market_aggregator.snapshots_by_asset()
+    return [b for b, _q in market_aggregator.pairs()
+            if any(s.mid > 0 for s in by_asset.get(b, []))] \
+        or [b for b, _q in market_aggregator.pairs()]   # before the first poll
+
+
+def _usdt_peg_dev_pct() -> Optional[float]:
+    """USDT has no Iran premium (it is the benchmark); show its global
+    deviation from $1 instead."""
+    usd = market_aggregator.usd_reference.get("USDT")
+    return round((usd - 1.0) * 100, 3) if usd else None
+
+
 # --------------------------------------------------------------- overview ---
 
 @app.get("/api/overview")
@@ -622,7 +638,7 @@ def get_overview() -> List[Dict[str, Any]]:
     by_asset = market_aggregator.snapshots_by_asset()
     for base, quote in market_aggregator.pairs():
         snaps = by_asset.get(base, [])
-        live = [s for s in snaps if s.mid > 0 and s.status != "offline"]
+        live = market_aggregator.usable_snaps(base)
         price = market_aggregator.composite_mid(base)
         best_bid = max(live, key=lambda s: s.best_bid, default=None)
         best_ask = min((s for s in live if s.best_ask > 0),
@@ -631,18 +647,19 @@ def get_overview() -> List[Dict[str, Any]]:
         out.append({
             "base": base, "quote": quote,
             "price": price,
-            "change_1h": metrics_engine.change_pct(base, quote, 3600),
-            "change_24h": metrics_engine.change_pct(base, quote, 86400),
-            "change_7d": metrics_engine.change_pct(base, quote, 7 * 86400),
+            "change_1h": metrics_engine.change_pct(base, quote, 3600, price),
+            "change_24h": metrics_engine.change_pct(base, quote, 86400, price),
+            "change_7d": metrics_engine.change_pct(base, quote, 7 * 86400, price),
             "volume_24h_quote": sum(s.volume_24h_quote for s in live),
             "liquidity_score": round(statistics.fmean(scores.values()), 1) if scores else None,
-            "min_spread_pct": min((s.spread_pct for s in live if s.spread_pct > 0),
-                                  default=None),
+            "min_spread_pct": min((s.spread_pct for s in live
+                                   if s.spread_pct >= MIN_REAL_SPREAD_PCT), default=None),
             "best_bid": ({"exchange": best_bid.exchange, "price": best_bid.best_bid}
                          if best_bid else None),
             "best_ask": ({"exchange": best_ask.exchange, "price": best_ask.best_ask}
                          if best_ask else None),
             "premium_pct": market_aggregator.premium_pct(base),
+            "peg_dev_pct": _usdt_peg_dev_pct() if base == "USDT" else None,
             "exchanges_live": len(live), "exchanges_total": len(snaps),
             "sparkline": metrics_engine.sparkline(base),
         })
@@ -674,18 +691,21 @@ def get_pair_detail(base: str) -> Dict[str, Any]:
         d["color"] = exchange_color(s.exchange)
         d["spread_stats_1h"] = metrics_engine.spread_stats(s.exchange, base, 3600)
         rows.append(d)
-    books = {ex: b for (ex, b_), b in market_aggregator.books.items() if b_ == base}
-    ops = metrics_engine.arbitrage(base, quote, books)
+    ops = metrics_engine.arbitrage(base, quote, market_aggregator.usable_books(base))
+    price = market_aggregator.composite_mid(base)
     return {
         "base": base, "quote": quote,
-        "price": market_aggregator.composite_mid(base),
+        "price": price,
         "premium_pct": market_aggregator.premium_pct(base),
+        "peg_dev_pct": _usdt_peg_dev_pct() if base == "USDT" else None,
         "usd_reference": market_aggregator.usd_reference.get(base),
-        "change_1h": metrics_engine.change_pct(base, quote, 3600),
-        "change_24h": metrics_engine.change_pct(base, quote, 86400),
-        "change_7d": metrics_engine.change_pct(base, quote, 7 * 86400),
+        "change_1h": metrics_engine.change_pct(base, quote, 3600, price),
+        "change_24h": metrics_engine.change_pct(base, quote, 86400, price),
+        "change_7d": metrics_engine.change_pct(base, quote, 7 * 86400, price),
+        "stale_latency_ms": settings_store.get().stale_latency_ms,
         "exchanges": rows,
-        "arbitrage": [o.to_dict() for o in ops[:10]],
+        # every venue pair, best net first (net < 0 included — the UI shows the gap)
+        "arbitrage": [o.to_dict() for o in ops[:30]],
     }
 
 
@@ -728,18 +748,28 @@ def get_tob_share(base: str = Query("BTC"),
     tob_tracker.flush()   # include up-to-the-minute accumulation
     since = time.time() - HISTORY_WINDOWS.get(range, 86400)
     rows = db.get_tob_share(base, since)
-    totals: Dict[str, Dict[str, List[float]]] = {}
-    series: Dict[str, Dict[float, Dict[str, float]]] = {}
+    # Share = a venue's best-quote seconds / all venues' best-quote seconds, per
+    # side. New data splits ties 1/n so this equals time share; normalizing at
+    # read time also brings hours recorded before that fix back to 100%.
+    best: Dict[str, Dict[str, float]] = {}
+    side_total = {"bid": 0.0, "ask": 0.0}
+    hour_best: Dict[float, Dict[str, Dict[str, float]]] = {}
     for r in rows:
-        t = totals.setdefault(r["exchange"], {"bid": [0.0, 0.0], "ask": [0.0, 0.0]})
-        t[r["side"]][0] += r["seconds_best"]
-        t[r["side"]][1] += r["seconds_total"]
-        series.setdefault(r["exchange"], {}).setdefault(r["hour_ts"], {})[r["side"]] = \
-            r["seconds_best"] / r["seconds_total"] * 100 if r["seconds_total"] else 0
+        best.setdefault(r["exchange"], {"bid": 0.0, "ask": 0.0})[r["side"]] += r["seconds_best"]
+        side_total[r["side"]] += r["seconds_best"]
+        hour_best.setdefault(r["hour_ts"], {"bid": {}, "ask": {}})[r["side"]][r["exchange"]] = \
+            r["seconds_best"]
+    series: Dict[str, Dict[float, Dict[str, float]]] = {}
+    for hour, sides in hour_best.items():
+        for side, per_ex in sides.items():
+            tot = sum(per_ex.values())
+            for ex, secs in per_ex.items():
+                series.setdefault(ex, {}).setdefault(hour, {})[side] = \
+                    secs / tot * 100 if tot else 0
     board = []
-    for ex, t in totals.items():
-        bid = t["bid"][0] / t["bid"][1] * 100 if t["bid"][1] else 0
-        ask = t["ask"][0] / t["ask"][1] * 100 if t["ask"][1] else 0
+    for ex, t in best.items():
+        bid = t["bid"] / side_total["bid"] * 100 if side_total["bid"] else 0
+        ask = t["ask"] / side_total["ask"] * 100 if side_total["ask"] else 0
         board.append({
             "exchange": ex,
             "bid_share_pct": round(bid, 2), "ask_share_pct": round(ask, 2),
@@ -930,7 +960,7 @@ def get_spread_analytics(base: str, window: int = Query(3600, ge=300, le=30 * 86
 def get_arbitrage() -> List[Dict[str, Any]]:
     out = []
     for base, quote in market_aggregator.pairs():
-        books = {ex: b for (ex, b_), b in market_aggregator.books.items() if b_ == base}
+        books = market_aggregator.usable_books(base)
         out.extend(o.to_dict() for o in metrics_engine.arbitrage(base, quote, books))
     out.sort(key=lambda o: o["net_pct"], reverse=True)
     return out
@@ -943,7 +973,7 @@ def get_anomalies() -> List[Dict[str, Any]]:
     # actionable arbitrage windows surface here too (info severity)
     now = time.time()
     for base, quote in market_aggregator.pairs():
-        books = {ex: b for (ex, b_), b in market_aggregator.books.items() if b_ == base}
+        books = market_aggregator.usable_books(base)
         for o in metrics_engine.arbitrage(base, quote, books)[:2]:
             if o.net_pct >= 0.25:
                 out.append({
@@ -1005,8 +1035,8 @@ def get_liquidity() -> List[Dict[str, Any]]:
             drop = metrics_engine.depth_drop_pct(s.exchange, base)
             score = scores.get(s.exchange)
             warnings: List[str] = []
-            if s.status == "offline":
-                warnings.append("offline")
+            if s.status in ("offline", "stale", "outlier"):
+                warnings.append(s.status)
             if score is not None and score < 40:
                 warnings.append("low_score")
             if st["avg"] and st["current"] and st["current"] >= 2 * st["avg"]:
@@ -1137,18 +1167,28 @@ def list_custom_pairs() -> List[Dict[str, Any]]:
 @app.post("/api/admin/pairs", dependencies=[Depends(require_admin)])
 def add_custom_pair(body: PairIn) -> Dict[str, Any]:
     quote = body.quote or CONFIG.get("quote_currency", "TMN")
-    db.upsert_custom_pair(body.base, quote, body.enabled)
+    # "USOON/TMN" typed as the base used to produce "USOON/TMN/TMN" everywhere
+    base = clean_base(body.base, quote)
+    if not base:
+        raise HTTPException(status_code=422,
+                            detail="base must be a ticker like DOGE (no quote, 2-12 letters/digits)")
+    db.upsert_custom_pair(base, quote, body.enabled)
     if body.coingecko_id:
-        db.upsert_reference_id(body.base, body.coingecko_id.strip().lower())
-        market_aggregator._reference.set_id(body.base, body.coingecko_id.strip().lower())
-    market_aggregator._unresolvable.discard(body.base.upper())
+        db.upsert_reference_id(base, body.coingecko_id.strip().lower())
+        market_aggregator._reference.set_id(base, body.coingecko_id.strip().lower())
+    market_aggregator._unresolvable.discard(base)
     market_aggregator.usd_reference_ts = 0.0   # refresh reference on next cycle
     return {"ok": True, "pairs": [f"{b}/{q}" for b, q in market_aggregator.pairs()]}
 
 
-@app.delete("/api/admin/pairs/{base}", dependencies=[Depends(require_admin)])
+@app.delete("/api/admin/pairs/{base:path}", dependencies=[Depends(require_admin)])
 def remove_custom_pair(base: str) -> Dict[str, Any]:
-    db.delete_custom_pair(base, CONFIG.get("quote_currency", "TMN"))
+    quote = CONFIG.get("quote_currency", "TMN")
+    target = clean_base(base, quote) or base.upper()
+    # also removes rows stored un-normalized by older builds ("USOON/TMN")
+    for row in db.get_custom_pairs():
+        if row["base"] == base.upper() or clean_base(row["base"], quote) == target:
+            db.delete_custom_pair(row["base"], row["quote"])
     return {"ok": True}
 
 

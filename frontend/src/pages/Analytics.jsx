@@ -5,7 +5,10 @@ import { Badge, EmptyState, Seg } from '../components';
 import { IconActivity } from '../icons';
 import { MultiLineChart, AreaChart } from '../charts';
 import { useLang } from '../i18n';
-import { fmtCompact, timeAgo } from '../util';
+import { fmtCompact, fmtPct, premiumColor, timeAgo } from '../util';
+
+// one-toman spreads on cheap assets (USDT ≈ 0.0004%) must not read as 0.000%
+const fmtSpread = (v) => (v == null ? '—' : v.toFixed(v < 0.01 ? 4 : 3) + '%');
 
 const WINDOWS = [
   { value: 3600, label: '1H' }, { value: 14400, label: '4H' },
@@ -66,10 +69,10 @@ export default function Analytics({ asset, assets, onSelectAsset, meta }) {
               {spread && Object.entries(spread.stats).map(([ex, s]) => (
                 <tr key={ex}>
                   <td><b style={{ color: colorOf(ex) }}>{ex}</b></td>
-                  <td className="num">{s.current != null ? s.current.toFixed(3) + '%' : '—'}</td>
-                  <td className="num">{s.avg != null ? s.avg.toFixed(3) + '%' : '—'}</td>
-                  <td className="num" style={{ color: 'var(--green)' }}>{s.min != null ? s.min.toFixed(3) + '%' : '—'}</td>
-                  <td className="num" style={{ color: 'var(--red)' }}>{s.max != null ? s.max.toFixed(3) + '%' : '—'}</td>
+                  <td className="num">{fmtSpread(s.current)}</td>
+                  <td className="num">{fmtSpread(s.avg)}</td>
+                  <td className="num" style={{ color: 'var(--green)' }}>{fmtSpread(s.min)}</td>
+                  <td className="num" style={{ color: 'var(--red)' }}>{fmtSpread(s.max)}</td>
                   <td className="num">{s.stdev != null ? s.stdev.toFixed(4) : '—'}</td>
                 </tr>
               ))}
@@ -200,8 +203,8 @@ function PremiumPanel({ asset, window_, t }) {
       {data?.stats && (
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12,
                       color: 'var(--text-2)', marginBottom: 10 }}>
-          <span>{t('currentSpread')}: <b className="num" style={{ color: 'var(--amber)' }}>
-            {data.current != null ? data.current.toFixed(2) + '%' : '—'}</b></span>
+          <span>{t('currentSpread')}: <b className="num" style={{ color: premiumColor(data.current) }}>
+            {fmtPct(data.current)}</b></span>
           <span>μ <b className="num">{data.stats.avg != null ? data.stats.avg.toFixed(2) + '%' : '—'}</b></span>
           <span style={{ color: 'var(--green)' }}>{t('minSpread')} <b className="num">
             {data.stats.min != null ? data.stats.min.toFixed(2) + '%' : '—'}</b></span>

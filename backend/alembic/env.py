@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep the app loggers alive when migrations run in-process at startup.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Prefer DATABASE_URL; fall back to discrete PG* vars used by docker-compose.
 def _database_url() -> str:

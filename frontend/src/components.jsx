@@ -124,11 +124,11 @@ export function Countdown({ ts }) {
   return cd ? <span className="countdown">⏱ {cd}</span> : null;
 }
 
-export function SortableTh({ label, col, sort, setSort, align }) {
+export function SortableTh({ label, col, sort, setSort, align, className }) {
   const active = sort.col === col;
   return (
     <th onClick={() => setSort({ col, dir: active && sort.dir === 'desc' ? 'asc' : 'desc' })}
-        style={{ textAlign: align }}>
+        style={{ textAlign: align }} className={className}>
       {label} {active ? (sort.dir === 'desc' ? '↓' : '↑') : ''}
     </th>
   );

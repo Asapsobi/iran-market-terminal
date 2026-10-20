@@ -47,3 +47,20 @@ def test_window_lifecycle_db():
     assert w["max_size_base"] == 0.8
     assert w["peak_profit_quote"] == 25_000_000
     assert w["closed_ts"] is not None
+
+
+def test_tob_ties_are_split():
+    from app.intelligence import TobTracker
+    from app.models import MarketSnapshot
+    tr = TobTracker()
+    snaps = [MarketSnapshot(exchange=ex, base="BTC", quote="TMN", best_bid=bid,
+                            best_ask=ask, mid=(bid + ask) / 2, status="connected",
+                            timestamp=time.time())
+             for ex, bid, ask in (("A", 100, 101), ("B", 100, 102), ("C", 99, 101))]
+    tr._last_cycle_ts = time.time() - 10
+    tr._last_flush = time.time()   # keep it in memory (no DB)
+    tr.record({"BTC": snaps})
+    for side in ("bid", "ask"):
+        best = sum(acc[0] for (ex, b, s, h), acc in tr._acc.items() if s == side)
+        total = max(acc[1] for (ex, b, s, h), acc in tr._acc.items() if s == side)
+        assert abs(best - total) < 1e-6   # shares across venues sum to 100%

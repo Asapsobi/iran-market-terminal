@@ -15,21 +15,42 @@ snapshots + stored reference prices) computations share these definitions.
 """
 from __future__ import annotations
 
+import logging
 import statistics
+import time
 from typing import Any, Dict, List, Optional
 
 from . import db
-from .models import MarketSnapshot
+from .models import MarketSnapshot, is_usable
+
+log = logging.getLogger("terminal.premium")
 
 METHODS = ("composite", "best_mid", "vwap", "exchange")
 BUCKET = 300.0   # snapshot cadence — series are joined on 5-minute buckets
+# A real Iran premium/discount is a few percent; anything beyond this means the
+# global reference is mapped to the wrong coin or the units are off.
+SANITY_MAX_PCT = 20.0
+_insane_warned: Dict[str, float] = {}
+
+
+def sane_premium(value: Optional[float], label: str = "") -> Optional[float]:
+    """None (shown as '—') when |premium| is implausibly large; logs a throttled warning."""
+    if value is None or abs(value) <= SANITY_MAX_PCT:
+        return value
+    now = time.time()
+    if now - _insane_warned.get(label, 0.0) > 900:
+        _insane_warned[label] = now
+        log.warning("premium for %s = %+.1f%% exceeds ±%.0f%% — hidden; check the "
+                    "global reference id / units for this asset", label or "?",
+                    value, SANITY_MAX_PCT)
+    return None
 
 
 # ------------------------------------------------------------- real-time ---
 
 def live_method_price(snaps: List[MarketSnapshot], method: str,
                       exchange: Optional[str] = None) -> Optional[float]:
-    live = [s for s in snaps if s.mid > 0 and s.status != "offline"]
+    live = [s for s in snaps if is_usable(s)]
     if not live:
         return None
     if method == "exchange":
@@ -55,7 +76,8 @@ def live_premium(snaps_asset: List[MarketSnapshot], snaps_usdt: List[MarketSnaps
     usdt_price = live_method_price(snaps_usdt, method, exchange)
     if not asset_price or not usdt_price or not usd_ref:
         return None
-    return round(((asset_price / usdt_price) / usd_ref - 1) * 100, 3)
+    label = snaps_asset[0].base if snaps_asset else ""
+    return sane_premium(round(((asset_price / usdt_price) / usd_ref - 1) * 100, 3), label)
 
 
 # ------------------------------------------------------------ historical ---
@@ -115,9 +137,12 @@ def premium_series(base: str, quote: str, method: str, since: float,
         if not a or not u or not r:
             continue
         implied_usd = a / u
+        pct = round((implied_usd / r - 1) * 100, 3)
+        if abs(pct) > SANITY_MAX_PCT:   # history recorded under a wrong reference id
+            continue
         out.append({
             "ts": bts,
-            "premium_pct": round((implied_usd / r - 1) * 100, 3),
+            "premium_pct": pct,
             "implied_usd": round(implied_usd, 4),
             "asset_price": round(a, 2),
             "usdt_price": round(u, 2),

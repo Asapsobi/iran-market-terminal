@@ -39,7 +39,7 @@ _DEFAULTS: Dict[str, Any] = {
         "provider": "coingecko",
         "coingecko_ids": {
             "BTC": "bitcoin", "ETH": "ethereum", "USDT": "tether",
-            "TRX": "tron", "SOL": "solana", "GRAM": "gram", "BNB": "binancecoin",
+            "TRX": "tron", "SOL": "solana", "GRAM": "the-open-network", "BNB": "binancecoin",
             "XRP": "ripple", "ADA": "cardano", "LTC": "litecoin",
             "LINK": "chainlink", "SUI": "sui", "XLM": "stellar",
             "AVAX": "avalanche-2", "NEAR": "near", "UNI": "uniswap",

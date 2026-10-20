@@ -60,13 +60,16 @@ class CandleService:
         """Aggregate in-memory mid rings into 60s candles (last ~2h window)."""
         now = time.time()
         since = self._last_ring_build or now - 7200
+        # Start at a bucket boundary: re-upserting a bucket from only its tail
+        # used to overwrite its open/high/low with partial data.
+        cutoff = since - since % RING_RES - RING_RES
         rows: List[tuple] = []
         quote = CONFIG.get("quote_currency", "TMN")
 
         def bucketize(points, name, base):
             buckets: Dict[float, List[float]] = {}
             for ts, mid in points:
-                if ts < since - RING_RES:
+                if ts < cutoff:
                     continue
                 buckets.setdefault(ts - ts % RING_RES, []).append(mid)
             for bts, vals in buckets.items():
@@ -135,8 +138,45 @@ class CandleService:
         for res in sources:
             rows = db.get_candles(exchange, base, quote, res, since)
             if len(rows) >= 2:
-                return self._resample(rows, target_res)
+                return self._resample(self._with_live_tail(rows, exchange, base, res),
+                                      target_res)
         return []
+
+    def _with_live_tail(self, rows: List[Dict], exchange: str, base: str,
+                        res: int) -> List[Dict]:
+        """Ring candles are only persisted every candle_interval (5 min), so the
+        last stored candle lags the live price. Append/patch the minutes since
+        the last persisted build straight from the in-memory ring, so the last
+        candle closes at the current composite (or venue) mid."""
+        ring = (metrics_engine.composite_rings.get(base) if exchange == "composite"
+                else metrics_engine.mid_rings.get((exchange, base)))
+        if not ring or not rows:
+            return rows
+        last_ts = rows[-1]["ts"]
+        tail_from = last_ts - last_ts % RING_RES
+        tail: Dict[float, Dict] = {}
+        for ts, mid in ring:
+            if ts < tail_from:
+                continue
+            bts = ts - ts % RING_RES
+            c = tail.get(bts)
+            if c is None:
+                tail[bts] = {"ts": bts, "open": mid, "high": mid, "low": mid,
+                             "close": mid, "volume": 0.0}
+            else:
+                c["high"] = max(c["high"], mid)
+                c["low"] = min(c["low"], mid)
+                c["close"] = mid
+        if not tail:
+            return rows
+        out = list(rows)
+        if res == RING_RES:
+            # the ring is authoritative for the minutes it covers
+            out = [r for r in out if r["ts"] not in tail]
+        else:
+            # native 5m candles: keep them, only extend past the last native bar
+            tail = {k: v for k, v in tail.items() if k >= last_ts + res}
+        return out + [tail[k] for k in sorted(tail)]
 
 
 candle_service = CandleService()

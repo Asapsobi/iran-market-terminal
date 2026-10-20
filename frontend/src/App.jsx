@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
 import { apiGet, apiPost, getToken, setAuthErrorHandler, setToken,
          useLiveStream, usePoll } from './api';
-import { Badge, Countdown } from './components';
+import { Badge, Chips } from './components';
 import CommandPalette from './CommandPalette';
 import NotificationCenter from './NotificationCenter';
 import { ChangePasswordModal, ManageUsersModal } from './UserAdmin';
 import { IconBell, IconCheck, IconCommand, IconRows, IconX } from './icons';
 import { useLang } from './i18n';
 import Login from './Login';
-import { eventFlag, fmtCompact, fmtNum, fmtPct, timeAgo } from './util';
+import { eventFlag, fmtCompact, fmtDateTime, fmtNum, fmtPct, humanCountdown,
+         premiumColor, timeAgo } from './util';
 import Overview from './pages/Overview';
 import MarketDetail from './pages/MarketDetail';
 import Analytics from './pages/Analytics';
@@ -20,6 +21,40 @@ import Help from './pages/Help';
 import Intelligence from './pages/Intelligence';
 
 const PAGES = ['overview', 'market', 'analytics', 'desk', 'intel', 'calendar', 'news', 'admin', 'help'];
+
+/** Collapse repeats of the same alert (same rule, same text apart from the
+ *  numbers) so the bell counts distinct problems, not every re-fire. */
+function groupAlerts(events) {
+  const groups = new Map();
+  for (const e of events) {
+    const key = `${e.rule_id ?? e.rule_type}|${String(e.message || '').replace(/[-+]?[\d.,]+%?/g, '#')}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, latest: e, count: 0, unacked: [] };
+      groups.set(key, g);
+    }
+    g.count += 1;
+    if ((e.ts || 0) > (g.latest.ts || 0)) g.latest = e;
+    if (!e.acknowledged && e.id) g.unacked.push(e.id);
+  }
+  return [...groups.values()].sort((a, b) => (b.latest.ts || 0) - (a.latest.ts || 0));
+}
+
+/** Ticker countdown with a label: "in 21h 27m", exact time in the tooltip. */
+function EventCountdown({ ts, lang, t }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => force((n) => n + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
+  const cd = humanCountdown(ts);
+  if (!cd) return null;
+  return (
+    <span className="countdown" title={fmtDateTime(ts, lang, { weekday: 'short' }) + ' · ' + t('iranTime')}>
+      {t('in')} {cd}
+    </span>
+  );
+}
 
 /** Auth gate: shows the login screen until a valid session exists. */
 export default function App() {
@@ -60,6 +95,8 @@ function Terminal({ authUser, onLogout, onUserUpdate }) {
   const [calendar, setCalendar] = useState([]);
   const [compact, setCompact] = useState(() => localStorage.getItem('density') === 'compact');
   const [userMenu, setUserMenu] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
+  const [alertSev, setAlertSev] = useState('ALL');
   const [pwOpen, setPwOpen] = useState(false);
   const [usersOpen, setUsersOpen] = useState(false);
 
@@ -112,7 +149,14 @@ function Terminal({ authUser, onLogout, onUserUpdate }) {
   const usdt = overview.find((r) => r.base === 'USDT');
   const totalVol = overview.reduce((s, r) => s + (r.volume_24h_quote || 0), 0);
   const assets = meta?.assets?.length ? meta.assets : ['BTC', 'ETH', 'USDT'];
-  const unread = alertEvents.filter((e) => !e.acknowledged).length;
+  const alertGroups = groupAlerts(alertEvents);
+  const unread = alertGroups.filter((g) => g.unacked.length).length;
+  const shownGroups = alertGroups.filter((g) =>
+    alertSev === 'ALL' || String(g.latest.severity).toLowerCase() === alertSev.toLowerCase());
+  const ackIds = async (ids) => {
+    await Promise.all(ids.map((id) => apiPost(`/alerts/events/${id}/ack`, {}).catch(() => {})));
+    setAlertEvents(await apiGet('/alerts/events?hours=24').catch(() => alertEvents));
+  };
   const now = Date.now() / 1000;
   const nextEvent = calendar
     .filter((e) => e.impact === 'High' && e.timestamp > now)
@@ -124,44 +168,57 @@ function Terminal({ authUser, onLogout, onUserUpdate }) {
     setAlertEvents(await apiGet('/alerts/events?hours=24').catch(() => alertEvents));
   };
 
+  // Admin + Help live in the user menu so the header fits on one row.
   const navItems = [
     ['overview', t('overview')], ['analytics', t('analytics')], ['desk', t('desk')],
     ['intel', t('intelligence')], ['calendar', t('calendar')], ['news', t('news')],
-    ['admin', t('admin')], ['help', t('help')],
   ];
+  const isActive = (id) => page === id || (id === 'overview' && page === 'market');
 
   return (
     <div className="app">
       <header className="topbar">
+        <button className="icon-btn nav-burger" aria-label="Menu" aria-expanded={navOpen}
+                onClick={() => setNavOpen(!navOpen)}>☰</button>
+        {navOpen && (
+          <div className="nav-menu" onMouseLeave={() => setNavOpen(false)}>
+            {[...navItems, ['admin', t('admin')], ['help', t('help')]].map(([id, label]) => (
+              <button key={id} className={`palette-item ${isActive(id) ? 'active' : ''}`}
+                      onClick={() => { setNavOpen(false); go(id); }}>{label}</button>
+            ))}
+          </div>
+        )}
         <div className="logo">
           <span className="pulse" />
-          <span>Iran Market <span style={{ color: 'var(--accent)' }}>Terminal</span></span>
+          <span className="logo-text">Iran Market <span style={{ color: 'var(--accent)' }}>Terminal</span></span>
           {meta?.demo_mode && <span className="badge warning">{t('demoMode')}</span>}
         </div>
         <nav className="nav">
           {navItems.map(([id, label]) => (
-            <button key={id}
-                    className={page === id || (id === 'overview' && page === 'market') ? 'active' : ''}
+            <button key={id} className={isActive(id) ? 'active' : ''}
                     onClick={() => go(id)}>{label}</button>
           ))}
         </nav>
         <div className="topbar-right">
-          <button className="icon-btn" title="Ctrl+K" aria-label="Command palette"
+          <button className="icon-btn hide-phone" title="Ctrl+K" aria-label="Command palette"
                   onClick={() => setPaletteOpen(true)}>
             <IconCommand />
           </button>
-          <button className={`icon-btn ${compact ? 'active' : ''}`} title={t('density')}
+          <button className={`icon-btn hide-phone ${compact ? 'active' : ''}`} title={t('density')}
                   aria-label={t('density')}
                   style={compact ? { color: 'var(--accent)' } : undefined}
                   onClick={() => setCompact(!compact)}>
             <IconRows />
           </button>
+          {/* operational notifications: node disconnects, upcoming events, breaking news */}
+          <NotificationCenter markets={marketsSnap} calendar={calendar}
+                              venues={(meta?.exchanges || []).map((e) => e.name)} />
           <button className="icon-btn" aria-label={t('alerts')}
                   onClick={() => setDrawerOpen(true)}>
             <IconBell />
             {unread > 0 && <span className="count">{unread > 99 ? '99+' : unread}</span>}
           </button>
-          <span className={`dot ${wsLive ? 'connected' : 'delayed'}`}
+          <span className={`dot hide-phone ${wsLive ? 'connected' : 'delayed'}`}
                 title={wsLive ? 'WebSocket live' : 'Polling'} />
           <div className="seg">
             <button className={lang === 'en' ? 'active' : ''} onClick={() => setLang('en')}>EN</button>
@@ -179,6 +236,15 @@ function Terminal({ authUser, onLogout, onUserUpdate }) {
                 <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 10px 6px' }}>
                   {authUser.username} · {authUser.role === 'admin' ? t('roleAdmin') : t('roleOperator')}
                 </div>
+                <button className={`palette-item ${page === 'admin' ? 'active' : ''}`}
+                        onClick={() => { setUserMenu(false); go('admin'); }}>
+                  {t('admin')}
+                </button>
+                <button className={`palette-item ${page === 'help' ? 'active' : ''}`}
+                        onClick={() => { setUserMenu(false); go('help'); }}>
+                  {t('help')}
+                </button>
+                <div style={{ borderTop: '1px solid var(--border)', margin: '4px 0' }} />
                 <button className="palette-item"
                         onClick={() => { setUserMenu(false); setPwOpen(true); }}>
                   {t('changePassword')}
@@ -205,7 +271,7 @@ function Terminal({ authUser, onLogout, onUserUpdate }) {
                 style={{ padding: '0 5px', fontSize: 11 }}>{fmtPct(btc.change_24h)}</span></span>}
         {usdt && <span>{t('usdtRate')} <b className="num">{fmtNum(usdt.price, 0)}</b></span>}
         {meta?.usd_reference?.BTC && <span>{t('globalBtc')} <b className="num">${fmtNum(meta.usd_reference.BTC, 0)}</b></span>}
-        {btc?.premium_pct != null && <span>{t('premium')} <b style={{ color: 'var(--amber)' }}>{fmtPct(btc.premium_pct)}</b></span>}
+        {btc?.premium_pct != null && <span>{t('premium')} <b style={{ color: premiumColor(btc.premium_pct) }}>{fmtPct(btc.premium_pct)}</b></span>}
         <span>{t('totalVolume')} <b className="num">{fmtCompact(totalVol)}</b></span>
         {btc && <span>{t('liveVenues')} <b>{btc.exchanges_live}/{btc.exchanges_total}</b></span>}
         {nextEvent && (
@@ -213,7 +279,7 @@ function Terminal({ authUser, onLogout, onUserUpdate }) {
                 title={nextEvent.title}>
             {eventFlag(nextEvent.country, nextEvent.title)}{' '}
             <b>{nextEvent.title.length > 26 ? nextEvent.title.slice(0, 25) + '…' : nextEvent.title}</b>{' '}
-            <Countdown ts={nextEvent.timestamp} />
+            <EventCountdown ts={nextEvent.timestamp} lang={lang} t={t} />
           </span>
         )}
       </div>
@@ -252,26 +318,32 @@ function Terminal({ authUser, onLogout, onUserUpdate }) {
                         onClick={() => setDrawerOpen(false)}><IconX /></button>
               </span>
             </div>
+            <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)' }}>
+              <Chips options={['ALL', 'critical', 'warning', 'info']} value={alertSev}
+                     onChange={setAlertSev} />
+            </div>
             <div className="drawer-body">
-              {alertEvents.length ? alertEvents.map((e, i) => (
-                <div key={e.id ?? i}
-                     style={{ display: 'flex', gap: 9, alignItems: 'flex-start',
-                              padding: '9px 0', borderBottom: '1px solid var(--border)',
-                              opacity: e.acknowledged ? 0.45 : 1 }}>
-                  <Badge level={e.severity} />
-                  <span style={{ flex: 1, fontSize: 12.5, lineHeight: 1.45 }}>
-                    {e.message}
-                    <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 2 }}>
-                      {timeAgo(e.ts, lang)}
-                    </div>
-                  </span>
-                  {!e.acknowledged && e.id && (
-                    <button className="btn ghost sm" onClick={async () => {
-                      await apiPost(`/alerts/events/${e.id}/ack`, {});
-                      setAlertEvents(await apiGet('/alerts/events?hours=24'));
-                    }}>{t('acknowledge')}</button>)}
-                </div>
-              )) : (
+              {shownGroups.length ? shownGroups.map((g) => {
+                const e = g.latest;
+                return (
+                  <div key={g.key}
+                       style={{ display: 'flex', gap: 9, alignItems: 'flex-start',
+                                padding: '9px 0', borderBottom: '1px solid var(--border)',
+                                opacity: g.unacked.length ? 1 : 0.45 }}>
+                    <Badge level={e.severity} />
+                    <span style={{ flex: 1, fontSize: 12.5, lineHeight: 1.45 }}>
+                      {e.message}
+                      <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 2 }}>
+                        {timeAgo(e.ts, lang)}
+                        {g.count > 1 && <> · <b>×{g.count}</b> {t('in24h')}</>}
+                      </div>
+                    </span>
+                    {g.unacked.length > 0 && (
+                      <button className="btn ghost sm" onClick={() => ackIds(g.unacked)}>
+                        {t('acknowledge')}</button>)}
+                  </div>
+                );
+              }) : (
                 <div className="empty-state">
                   <div className="empty-state-icon"><IconBell /></div>
                   <div style={{ fontWeight: 600 }}>{t('noAlerts')}</div>
@@ -298,10 +370,6 @@ function Terminal({ authUser, onLogout, onUserUpdate }) {
           </div>
         ))}
       </div>
-
-      {/* operational notifications: node disconnects, upcoming events, breaking news */}
-      <NotificationCenter markets={marketsSnap} calendar={calendar}
-                          venues={(meta?.exchanges || []).map((e) => e.name)} />
 
       {pwOpen && <ChangePasswordModal onClose={() => setPwOpen(false)} />}
       {usersOpen && <ManageUsersModal me={authUser} onClose={() => setUsersOpen(false)} />}

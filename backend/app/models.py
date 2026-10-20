@@ -15,7 +15,17 @@ class ImpactLevel(int, Enum):
 class MarketStatus(str, Enum):
     CONNECTED = "connected"
     DELAYED = "delayed"
+    STALE = "stale"        # responded, but slower than the staleness threshold
+    OUTLIER = "outlier"    # price far off the cross-venue median (bad mapping/feed)
     OFFLINE = "offline"
+
+
+# Only these feed composites, premium, arbitrage and top-of-book share.
+USABLE_STATUSES = (MarketStatus.CONNECTED.value, MarketStatus.DELAYED.value)
+
+
+def is_usable(snap: "MarketSnapshot") -> bool:
+    return snap.mid > 0 and snap.status in USABLE_STATUSES
 
 
 @dataclass
@@ -153,6 +163,7 @@ class AppSettings:
     request_timeout: float = 12.0       # per-request budget (connect+read)
     ui_refresh_interval: float = 5.0
     arb_min_edge_pct: float = 0.1       # opportunity-ledger entry threshold (net %)
+    stale_latency_ms: float = 2000.0    # slower venue responses are flagged "stale"
 
     BOUNDS = {
         "market_interval": (1.0, 60.0),
@@ -163,4 +174,5 @@ class AppSettings:
         "request_timeout": (1.0, 30.0),
         "ui_refresh_interval": (2.0, 120.0),
         "arb_min_edge_pct": (0.01, 5.0),
+        "stale_latency_ms": (200.0, 30000.0),
     }

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import db
 from .metrics import metrics_engine
-from .models import MarketSnapshot
+from .models import MarketSnapshot, is_usable
 from .settings import settings_store
 
 log = logging.getLogger("terminal.intelligence")
@@ -42,7 +42,7 @@ class TobTracker:
             return
         hour = now - now % 3600
         for base, snaps in by_asset.items():
-            live = [s for s in snaps if s.mid > 0 and s.status != "offline"]
+            live = [s for s in snaps if is_usable(s)]
             if not live:
                 continue
             best_bid = max(s.best_bid for s in live)
@@ -59,7 +59,9 @@ class TobTracker:
                     acc = self._acc.setdefault(key, [0.0, 0.0])
                     acc[1] += dt
                     if s.exchange in holders:
-                        acc[0] += dt
+                        # a tie at the best price is shared, not counted in full
+                        # for every tied venue — keeps each column summing to 100%
+                        acc[0] += dt / len(holders)
         if now - self._last_flush >= 60:
             self.flush()
 
@@ -86,7 +88,7 @@ class ArbLedger:
         now = time.time()
         seen: set = set()
         for base, quote in aggregator.pairs():
-            books = {ex: b for (ex, b_), b in aggregator.books.items() if b_ == base}
+            books = aggregator.usable_books(base)
             for op in metrics_engine.arbitrage(base, quote, books):
                 if op.net_pct < threshold or op.max_size_base <= 0:
                     continue

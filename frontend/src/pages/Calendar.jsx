@@ -1,10 +1,10 @@
 // Economic calendar — Forex Factory-style: day groups, table rows, filters,
 // live status, surprise scoring, descriptions, historical values.
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiGet, usePoll } from '../api';
 import { Chips, Countdown } from '../components';
 import { useLang } from '../i18n';
-import { eventFlag, fmtDateTime, fmtDay, fmtPct } from '../util';
+import { eventFlag, fmtDateTime, fmtDay, fmtPct, impactLevel } from '../util';
 
 /* ---------------- event classification & descriptions ---------------- */
 
@@ -84,8 +84,20 @@ export default function Calendar() {
   const [collapsed, setCollapsed] = useState({});
   const [expanded, setExpanded] = useState(null);
   const [history, setHistory] = useState({});
+  const todayRef = useRef(null);
+  const scrolled = useRef(false);
 
   usePoll('/calendar', setEvents, 30000);   // actuals refresh automatically
+
+  // open on today (or the next day with events), not on past days
+  useEffect(() => {
+    if (!events || scrolled.current || !todayRef.current) return;
+    scrolled.current = true;
+    const top = todayRef.current.getBoundingClientRect().top + window.scrollY
+      - (parseInt(getComputedStyle(document.documentElement)
+                    .getPropertyValue('--topbar-h')) || 52) - 12;
+    window.scrollTo({ top: Math.max(0, top) });
+  });
 
   if (!events) return <div className="skel" style={{ height: 300 }} />;
 
@@ -93,7 +105,7 @@ export default function Calendar() {
   const currencies = ['ALL', ...new Set(events.map((e) => e.country).filter(Boolean))];
 
   const filtered = events.filter((e) =>
-    (impact === 'ALL' || e.impact === impact) &&
+    (impact === 'ALL' || impactLevel(e.impact) === impact.toLowerCase()) &&
     (currency === 'ALL' || e.country === currency) &&
     (etype === 'ALL' || classifyEvent(e.title).id === etype) &&
     (!search || e.title.toLowerCase().includes(search.toLowerCase())));
@@ -104,6 +116,11 @@ export default function Calendar() {
     const g = groups.find((x) => x.day === day);
     g ? g.items.push(ev) : groups.push({ day, ts: ev.timestamp, items: [ev] });
   }
+
+  // scroll anchor: today's group, else the first group that is still ahead
+  const todayLabel = fmtDay(now, lang);
+  let anchorIdx = groups.findIndex((x) => x.day === todayLabel);
+  if (anchorIdx < 0) anchorIdx = groups.findIndex((x) => x.items.some((ev) => ev.timestamp >= now));
 
   const toggleExpand = async (ev, key) => {
     if (expanded === key) { setExpanded(null); return; }
@@ -124,7 +141,7 @@ export default function Calendar() {
         <input className="input" style={{ maxWidth: 190 }} value={search}
                placeholder={t('searchEvents')} onChange={(e) => setSearch(e.target.value)} />
         <Chips options={['ALL', 'High', 'Medium', 'Low']} value={impact} onChange={setImpact} />
-        <select className="input" style={{ maxWidth: 120 }} value={currency}
+        <select className="input" style={{ minWidth: 150, maxWidth: 190 }} value={currency}
                 onChange={(e) => setCurrency(e.target.value)} title={t('currency')}>
           {currencies.map((c) => <option key={c} value={c}>{c === 'ALL' ? t('all') + ' — ' + t('currency') : c}</option>)}
         </select>
@@ -145,11 +162,11 @@ export default function Calendar() {
         <span>● {t('neutral')}</span>
       </div>
 
-      {groups.map((g) => {
+      {groups.map((g, gi) => {
         const isCollapsed = collapsed[g.day];
-        const isToday = fmtDay(now, lang) === g.day;
+        const isToday = todayLabel === g.day;
         return (
-          <div key={g.day} className="card cal-day">
+          <div key={g.day} className="card cal-day" ref={gi === anchorIdx ? todayRef : undefined}>
             <button className="cal-day-head" onClick={() =>
               setCollapsed((p) => ({ ...p, [g.day]: !p[g.day] }))}>
               <span className="chev">{isCollapsed ? '▸' : '▾'}</span>
@@ -201,7 +218,7 @@ export default function Calendar() {
                             <b style={{ fontSize: 12.5 }}>{ev.title}</b>
                             <span className="cal-type">{etypeInfo.label[lang]}</span>
                           </td>
-                          <td><span className={`imp-dot ${ev.impact.toLowerCase()}`} title={ev.impact} /></td>
+                          <td><span className={`imp-dot ${impactLevel(ev.impact)}`} title={ev.impact} /></td>
                           <td className="num" style={{ fontWeight: 700,
                                 color: tone === 'better' ? 'var(--green)'
                                      : tone === 'worse' ? 'var(--red)' : 'var(--text)' }}>

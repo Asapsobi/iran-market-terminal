@@ -20,12 +20,60 @@ export function fmtCompact(n) {
 
 export function fmtPct(n, digits = 2) {
   if (n === null || n === undefined || Number.isNaN(n)) return '—';
-  return `${n > 0 ? '+' : ''}${n.toFixed(digits)}%`;
+  const s = n.toFixed(digits);
+  if (Number(s) === 0) return `${(0).toFixed(digits)}%`;   // never "-0.00%"
+  return `${n > 0 ? '+' : ''}${s}%`;
 }
 
-export function pctClass(n) {
+export function pctClass(n, digits = 2) {
   if (n === null || n === undefined || Number.isNaN(n)) return 'flat';
-  return n > 0.005 ? 'up' : n < -0.005 ? 'down' : 'flat';
+  if (Number(n.toFixed(digits)) === 0) return 'flat';
+  return n > 0 ? 'up' : 'down';
+}
+
+/** Premium/discount color: amber = premium, blue = discount, gray = flat. */
+export function premiumColor(n) {
+  if (n === null || n === undefined || Number(n.toFixed(2)) === 0) return 'var(--text-2)';
+  return n > 0 ? 'var(--amber)' : 'var(--accent)';
+}
+
+/** TMN price for chart axes/labels: compact above 1B, else whole tomans. */
+export function fmtTmnAxis(v) {
+  if (v === null || v === undefined || !isFinite(v)) return '';
+  const a = Math.abs(v);
+  if (a >= 1e9) return (v / 1e9).toFixed(a >= 1e11 ? 2 : 3) + 'B';   // 21.373B
+  if (a >= 1e3) return Math.round(v).toLocaleString('en-US');
+  return v.toLocaleString('en-US', { maximumFractionDigits: a >= 1 ? 2 : 6 });
+}
+
+/** Order-book quantity: enough decimals that small BTC sizes aren't 0.0000. */
+export function fmtQty(q, maxQty) {
+  if (q === null || q === undefined || !isFinite(q)) return '—';
+  const ref = Math.max(Math.abs(maxQty || q), 1e-12);
+  const digits = ref >= 1000 ? 0 : ref >= 10 ? 2 : ref >= 1 ? 4 : ref >= 0.01 ? 6 : 8;
+  return q.toLocaleString('en-US', { minimumFractionDigits: digits,
+                                     maximumFractionDigits: digits });
+}
+
+/** Normalize feed impact labels: "High", "high", 3, "High Impact Expected",
+ *  and Forex Factory icon codes (red / ora / yel / gra). */
+export function impactLevel(raw) {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (s.startsWith('high') || s === '3' || s === 'red') return 'high';
+  if (s.startsWith('med') || s === '2' || s === 'ora' || s === 'orange') return 'medium';
+  if (s.startsWith('holiday') || s.startsWith('non-econ') || s === 'gra' || s === 'gray') return 'holiday';
+  return 'low';
+}
+
+/** "21h 27m", "3d 4h", "12m" — human countdown for labels. */
+export function humanCountdown(ts) {
+  const s = ts - Date.now() / 1000;
+  if (s <= 0) return null;
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
+        m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return m > 0 ? `${m}m` : '<1m';
 }
 
 // Iran-time date formatting. Persian locale automatically uses the Jalali

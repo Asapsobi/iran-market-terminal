@@ -244,8 +244,9 @@ def get_exchange_history(exchange: str, base: str, quote: str, since_ts: float,
 
 def get_spread_history(base: str, quote: str, since_ts: float,
                        exchange: Optional[str] = None) -> List[Dict[str, Any]]:
+    # ~0 = locked/crossed or empty book — not a real spread (see metrics.MIN_REAL_SPREAD_PCT)
     q = ("SELECT exchange, ts, spread_pct FROM price_snapshots"
-         " WHERE base=%s AND quote=%s AND ts>=%s")
+         " WHERE base=%s AND quote=%s AND ts>=%s AND spread_pct >= 0.0001")
     args: list = [base, quote, since_ts]
     if exchange:
         q += " AND exchange=%s"
@@ -265,6 +266,19 @@ def get_mid_at(base: str, quote: str, ts: float, tolerance: float = 900.0) -> Op
         )
         row = cur.fetchone()
         return row["mid"] if row else None
+
+
+def get_composite_open_at(base: str, quote: str, start_ts: float,
+                          end_ts: float) -> Optional[float]:
+    """Open of the first stored composite candle in [start_ts, end_ts)."""
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT open FROM candles WHERE exchange='composite' AND base=%s"
+            " AND quote=%s AND ts>=%s AND ts<%s ORDER BY ts ASC, resolution ASC LIMIT 1",
+            (base, quote, start_ts, end_ts),
+        )
+        row = cur.fetchone()
+        return row["open"] if row else None
 
 
 def get_pair_snapshots(base: str, quote: str, since_ts: float,

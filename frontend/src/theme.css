@@ -28,6 +28,7 @@
   --amber-bg: #ffb02018;
   --purple: #9c6bff;
   --radius: 10px;
+  --topbar-h: 52px;
   --font: 'Inter', 'Vazirmatn', -apple-system, 'Segoe UI', sans-serif;
   --mono: 'SF Mono', 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
 }
@@ -55,30 +56,51 @@ button { font-family: inherit; }
 /* ---------- layout ---------- */
 .app { min-height: 100vh; display: flex; flex-direction: column; }
 
+/* One fixed-height row at every width: logo + right cluster never shrink, the
+   nav takes the rest (and collapses into the ☰ menu on narrow screens). */
 .topbar {
-  display: flex; align-items: center; gap: 18px;
-  padding: 0 20px; height: 52px;
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 18px;
+  padding: 0 16px; height: var(--topbar-h);
   background: var(--bg-2);
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 50;
 }
-.logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; white-space: nowrap; }
+.logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; white-space: nowrap; flex-shrink: 0; }
 .logo .pulse {
   width: 9px; height: 9px; border-radius: 50%; background: var(--green);
   box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite;
 }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
-.nav { display: flex; gap: 2px; height: 100%; }
+.nav {
+  display: flex; gap: 2px; height: 100%; flex: 1 1 auto; min-width: 0;
+  white-space: nowrap; overflow-x: auto; scrollbar-width: none;
+}
+.nav::-webkit-scrollbar { display: none; }
 .nav button {
   background: none; border: none; color: var(--text-2); cursor: pointer;
-  padding: 0 13px; font-size: 13px; font-weight: 500; height: 100%;
-  border-bottom: 2px solid transparent; transition: color .15s;
+  padding: 0 12px; font-size: 13px; font-weight: 500; height: 100%;
+  border-bottom: 2px solid transparent; transition: color .15s; flex-shrink: 0;
 }
 .nav button:hover { color: var(--text); }
 .nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+.icon-btn.nav-burger { display: none; }
 
-.topbar-right { margin-inline-start: auto; display: flex; align-items: center; gap: 10px; }
+.topbar-right { margin-inline-start: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.topbar-right .notifc-head { display: inline-flex; }
+
+/* hamburger dropdown (narrow screens) */
+.nav-menu {
+  position: absolute; top: calc(var(--topbar-h) - 4px); inset-inline-start: 12px; z-index: 60;
+  min-width: 200px; padding: 6px; background: var(--card);
+  border: 1px solid var(--border-2); border-radius: 10px; box-shadow: 0 10px 34px #000000aa;
+}
+.nav-menu .palette-item.active { color: var(--accent); }
+
+/* labelled 1H / 24H / 7D change chips */
+.chg-chip { display: inline-flex; align-items: center; gap: 5px; }
+.chg-chip-label { font-size: 10.5px; font-weight: 700; color: var(--text-3); letter-spacing: .04em; }
+.chart-hint { font-size: 10.5px; color: var(--text-3); margin-top: 6px; text-align: end; }
 
 .statsbar {
   display: flex; gap: 22px; padding: 7px 20px; overflow-x: auto;
@@ -108,13 +130,18 @@ button { font-family: inherit; }
 
 /* ---------- tables ---------- */
 .tbl { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+/* Sticky header sits under the sticky topbar. It sticks to the page when the
+   table's card doesn't scroll horizontally (.card.fit); inside a horizontal
+   scroller it stays at the scroller's top, which is the best CSS allows. */
 .tbl th {
   text-align: start; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
-  color: var(--text-3); padding: 8px 10px; border-bottom: 1px solid var(--border);
-  cursor: pointer; user-select: none; white-space: nowrap; position: sticky; top: 0;
+  color: var(--text-3); padding: 8px 9px; border-bottom: 1px solid var(--border);
+  cursor: pointer; user-select: none; white-space: nowrap;
+  position: sticky; top: var(--topbar-h); z-index: 2;
   background: var(--card);
 }
-.tbl td { padding: 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.tbl-scroll .tbl th { top: 0; }
+.tbl td { padding: 9px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .tbl tbody tr { transition: background .12s; }
 .tbl tbody tr:hover { background: var(--card-2); }
 .tbl tr.clickable { cursor: pointer; }
@@ -144,6 +171,8 @@ button { font-family: inherit; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .dot.delayed { background: var(--amber); }
+.dot.stale { background: var(--amber); box-shadow: 0 0 0 2px var(--amber-bg); }
+.dot.outlier { background: var(--purple); }
 .dot.offline { background: var(--red); }
 
 /* ---------- controls ---------- */
@@ -180,7 +209,9 @@ textarea.input { font-family: var(--mono); font-size: 12px; min-height: 140px; }
 
 /* ---------- misc ---------- */
 .bar-track { background: var(--bg-2); border-radius: 4px; height: 6px; width: 74px; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--red), var(--amber), var(--green)); }
+.bar-track { display: inline-block; vertical-align: middle; }
+/* block-level so the inline width (e.g. 75.1%) actually applies */
+.bar-fill { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--red), var(--amber), var(--green)); }
 
 .flash-up { animation: flashUp 0.7s; }
 .flash-down { animation: flashDown 0.7s; }
@@ -206,11 +237,13 @@ textarea.input { font-family: var(--mono); font-size: 12px; min-height: 140px; }
 @keyframes slideIn { from { transform: translateY(14px); opacity: 0; } }
 
 /* operational notification center (top-right) — distinct from .toast-wrap */
-.notifc { position: fixed; top: 66px; inset-inline-end: 16px; z-index: 120; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; width: 330px; max-width: calc(100vw - 24px); }
+/* gear lives in .topbar-right as a normal flex item; only the toast stack is
+   fixed, and the empty stack never intercepts clicks on the header */
+.notifc-stack { position: fixed; top: calc(var(--topbar-h) + 14px); inset-inline-end: 16px; z-index: 120; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; width: 330px; max-width: calc(100vw - 24px); pointer-events: none; }
+.notifc-stack > * { pointer-events: auto; }
 .notifc-head { position: relative; }
-.notifc-gear { background: var(--card); border: 1px solid var(--border-2); color: var(--text-2); width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 15px; box-shadow: 0 4px 14px #00000055; }
-.notifc-gear:hover { color: var(--text); }
-.notifc-settings { position: absolute; inset-inline-end: 0; top: 36px; width: 260px; background: var(--card); border: 1px solid var(--border-2); border-radius: 10px; padding: 12px; box-shadow: 0 10px 34px #000000aa; z-index: 130; }
+.notifc-gear { font-size: 15px; line-height: 1; width: 30px; height: 30px; }
+.notifc-settings { position: absolute; inset-inline-end: 0; top: 38px; width: 260px; background: var(--card); border: 1px solid var(--border-2); border-radius: 10px; padding: 12px; box-shadow: 0 10px 34px #000000aa; z-index: 130; }
 .notifc-set-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); margin-bottom: 6px; }
 .notifc-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 3px 0; cursor: pointer; }
 .notifc-row > span { color: var(--text-2); }
@@ -221,7 +254,7 @@ textarea.input { font-family: var(--mono); font-size: 12px; min-height: 140px; }
 .notifc-item.warning { border-inline-start-color: var(--amber); }
 .notifc-x { margin-inline-start: auto; cursor: pointer; color: var(--text-3); background: none; border: none; font-size: 16px; line-height: 1; padding: 0 2px; }
 .notifc-x:hover { color: var(--text); }
-@media (max-width: 640px) { .notifc { inset-inline: 12px; width: auto; } .notifc-item { width: auto; } }
+@media (max-width: 640px) { .notifc-stack { inset-inline: 12px; width: auto; } .notifc-item { width: auto; } }
 
 /* profile dialogs (change password / manage users) */
 .umodal-overlay { position: fixed; inset: 0; z-index: 200; background: #00000088; backdrop-filter: blur(2px); display: flex; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; }
@@ -275,19 +308,25 @@ textarea.input { font-family: var(--mono); font-size: 12px; min-height: 140px; }
 /* ---------- responsive ---------- */
 .tbl-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
 .card { overflow-x: auto; }               /* tables inside cards scroll, never overlap */
+.card.fit { overflow: visible; }          /* table sized to fit → page-sticky header */
 .seg { flex-wrap: wrap; max-width: 100%; }
 .main { overflow-x: clip; }
 img, svg, canvas { max-width: 100%; }
 
-.topbar { flex-wrap: wrap; height: auto; min-height: 52px; padding: 0 14px; }
-.logo { padding: 10px 0; }
-.nav { height: 52px; overflow-x: auto; scrollbar-width: none; max-width: 100%; }
-.nav::-webkit-scrollbar { display: none; }
-.topbar-right { padding: 8px 0; }
-
+/* progressively drop less important table columns instead of overflowing */
+@media (max-width: 1440px) { .hide-xl { display: none; } }
+@media (max-width: 1280px) { .hide-lg { display: none; } }
 @media (max-width: 1100px) {
+  .hide-md { display: none; }
   .main { padding: 14px 12px 34px; }
   .metric .value { font-size: 17px; }
+}
+
+/* narrow: nav collapses into the ☰ menu */
+@media (max-width: 1000px) {
+  .nav { display: none; }
+  .icon-btn.nav-burger { display: inline-flex; }
+  .topbar { gap: 10px; }
 }
 
 @media (max-width: 920px) {
@@ -295,8 +334,14 @@ img, svg, canvas { max-width: 100%; }
   .main { padding: 12px 10px 30px; }
   .tbl th, .tbl td { padding: 7px 6px; }
   .hide-sm { display: none; }
-  .nav button { padding: 0 10px; font-size: 12.5px; }
   .cal-detail-grid { grid-template-columns: 1fr; gap: 12px; }
+  .card.fit { overflow-x: auto; }
+}
+@media (max-width: 560px) {
+  .logo .logo-text { display: none; }    /* keep the pulse dot, drop the wordmark */
+  /* phone: keep gear, alerts, language and the user menu on the one row */
+  .topbar { padding: 0 10px; }
+  .topbar-right .hide-phone { display: none; }
 }
 
 @media (max-width: 640px) {
@@ -312,11 +357,9 @@ img, svg, canvas { max-width: 100%; }
 }
 
 @media (max-width: 480px) {
-  .logo span:not(.pulse) { font-size: 13px; }
   .metric-row { grid-template-columns: 1fr; }
   .tbl { font-size: 12px; }
   .num { font-size: 11.5px; }
-  .nav button { padding: 0 8px; }
   .statsbar { font-size: 11px; }
 }
 
@@ -419,13 +462,28 @@ html[dir='rtl'] .drawer { animation-name: drawerInRtl; }
 }
 
 /* ---------- order book ladder ---------- */
-.ladder { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; font-family: var(--mono); font-size: 11.5px; }
-.ladder-row { display: flex; justify-content: space-between; position: relative; padding: 2.5px 7px; }
+.ladder {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px;
+  font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums;
+  container-type: inline-size;
+}
+.ladder-row, .ladder-head {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px;
+  align-items: center; position: relative; padding: 2.5px 6px;
+}
+.ladder-row > span:not(.bar) { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* bids: qty | price(right) — asks: price | qty(right) */
+.ladder-row > span:last-child, .ladder-head > span:last-child { text-align: end; }
+.ladder-row.ask, .ladder > div:last-child .ladder-head { grid-template-columns: auto minmax(0, 1fr); }
 .ladder-row .bar { position: absolute; top: 0; bottom: 0; opacity: 0.13; }
 .ladder-row.bid .bar { inset-inline-end: 0; background: var(--green); }
 .ladder-row.ask .bar { inset-inline-start: 0; background: var(--red); }
-.ladder-row span { position: relative; }
-.ladder-head { font-size: 10px; color: var(--text-3); text-transform: uppercase; padding: 2px 7px; }
+.ladder-head { font-size: 10px; color: var(--text-3); text-transform: uppercase; padding: 2px 6px; }
+.ladder .p-short { display: none; }
+@container (max-width: 400px) {
+  .ladder .p-full { display: none; }
+  .ladder .p-short { display: inline; }
+}
 
 /* ---------- hero price ---------- */
 .hero-price { font-size: var(--fs-hero); font-weight: 700; letter-spacing: -0.5px; line-height: 1.15; }

@@ -6,7 +6,7 @@ import { AssetIcon, ChangePill, EmptyState, FlashNum, Seg, ScoreBar, StatusDot }
 import { CandleChart, DepthChart } from '../charts';
 import { IconCalc, IconMaximize, IconZap } from '../icons';
 import { useLang } from '../i18n';
-import { fmtCompact, fmtNum, fmtPct, timeAgo } from '../util';
+import { fmtCompact, fmtNum, fmtPct, fmtQty, premiumColor, timeAgo } from '../util';
 
 // Timeframe = the REAL candle interval (label matches what you get).
 const TIMEFRAMES = [
@@ -14,6 +14,7 @@ const TIMEFRAMES = [
   { value: '15min', label: '15m' }, { value: '1h', label: '1H' },
   { value: '4h', label: '4H' }, { value: '1d', label: '1D' },
 ];
+const TF_SECONDS = { '1min': 60, '5min': 300, '15min': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
 
 export default function MarketDetail({ asset, assets, onSelectAsset }) {
   const { t, lang } = useLang();
@@ -26,6 +27,7 @@ export default function MarketDetail({ asset, assets, onSelectAsset }) {
   const [compareCandles, setCompareCandles] = useState(null);
   const [depthEx, setDepthEx] = useState(null);
   const [depth, setDepth] = useState(null);
+  const [arbShowAll, setArbShowAll] = useState(false);
   const chartCardRef = useRef(null);
 
   usePoll(`/pair/${asset}`, setDetail, 5000, [asset]);
@@ -58,9 +60,11 @@ export default function MarketDetail({ asset, assets, onSelectAsset }) {
 
   if (!detail) return <div className="skel" style={{ height: 400 }} />;
 
-  const bestAsk = liveExchanges.reduce((a, b) =>
+  // best buy/sell badges only among venues that feed the composite
+  const usable = liveExchanges.filter((e) => e.status === 'connected' || e.status === 'delayed');
+  const bestAsk = usable.reduce((a, b) =>
     (!a || (b.best_ask > 0 && b.best_ask < a.best_ask)) ? b : a, null);
-  const bestBid = liveExchanges.reduce((a, b) =>
+  const bestBid = usable.reduce((a, b) =>
     (!a || b.best_bid > a.best_bid) ? b : a, null);
 
   const toggleOverlay = (key) => setOverlays((o) => ({ ...o, [key]: !o[key] }));
@@ -84,16 +88,26 @@ export default function MarketDetail({ asset, assets, onSelectAsset }) {
           {detail.usd_reference && (
             <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-3)', marginTop: 2 }}>
               ${fmtNum(detail.usd_reference)} ·{' '}
-              <span style={{ color: (detail.premium_pct ?? 0) > 0 ? 'var(--amber)' : 'var(--green)' }}>
-                {fmtPct(detail.premium_pct)} {t('vsGlobal')}
-              </span>
+              {asset === 'USDT' ? (
+                <span title={t('pegTip')} style={{ color: premiumColor(detail.peg_dev_pct) }}>
+                  {fmtPct(detail.peg_dev_pct)} {t('vsPeg')}
+                </span>
+              ) : (
+                <span title={t('premiumTip')} style={{ color: premiumColor(detail.premium_pct) }}>
+                  {fmtPct(detail.premium_pct)} {t('vsGlobal')}
+                </span>
+              )}
             </div>
           )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <span title="1h"><ChangePill value={detail.change_1h} /></span>
-          <span title="24h"><ChangePill value={detail.change_24h} /></span>
-          <span title="7d"><ChangePill value={detail.change_7d} /></span>
+          {[['1H', detail.change_1h], ['24H', detail.change_24h], ['7D', detail.change_7d]]
+            .map(([label, v]) => (
+              <span key={label} className="chg-chip">
+                <span className="chg-chip-label">{label}</span>
+                <ChangePill value={v} />
+              </span>
+            ))}
         </div>
       </div>
 
@@ -126,24 +140,29 @@ export default function MarketDetail({ asset, assets, onSelectAsset }) {
         </h3>
         {candles === null ? <div className="skel" style={{ height: 380 }} />
           : candles.length ? (
-            <CandleChart candles={candles} overlays={overlays}
+            <CandleChart candles={candles} overlays={overlays} resolution={TF_SECONDS[tf]}
+                         livePrice={chartEx === 'composite'
+                           ? detail.price
+                           : detail.exchanges.find((e) => e.exchange === chartEx)?.mid}
                          compare={compareEx && compareCandles?.length
                            ? { name: compareEx, candles: compareCandles } : null} />)
           : <EmptyState title={t('noData')} />}
+        <div className="chart-hint">{t('zoomHint')}</div>
       </div>
 
       {/* exchange comparison */}
       <div className="card" style={{ padding: 0, marginBottom: 14 }}>
         <h3 style={{ padding: '14px 16px 0' }}>{asset}/{detail.quote} — {t('exchanges')}</h3>
+        <div className="tbl-scroll">
         <table className="tbl">
           <thead>
             <tr>
               <th>{t('exchange')}</th><th>{t('status')}</th>
               <th>{t('bid')}</th><th>{t('ask')}</th>
-              <th>{t('spread')}</th><th>{t('spreadStats1h')}</th>
-              <th>{t('depth')}</th><th>{t('imbalance')}</th>
-              <th>{t('liquidityScore')}</th><th>{t('volume24')}</th>
-              <th>{t('fee')}</th><th>{t('latency')}</th>
+              <th>{t('spread')}</th><th className="hide-xl">{t('spreadStats1h')}</th>
+              <th>{t('depth')}</th><th className="hide-lg">{t('imbalance')}</th>
+              <th className="hide-md">{t('liquidityScore')}</th><th>{t('volume24')}</th>
+              <th className="hide-lg">{t('fee')}</th><th>{t('latency')}</th>
             </tr>
           </thead>
           <tbody>
@@ -158,26 +177,32 @@ export default function MarketDetail({ asset, assets, onSelectAsset }) {
                     {isBestAsk && <span className="badge info" style={{ marginInlineStart: 6 }}>{t('bestBuy')}</span>}
                     {isBestBid && <span className="badge high" style={{ marginInlineStart: 6 }}>{t('bestSell')}</span>}
                   </td>
-                  <td><StatusDot status={e.status} /> <span style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{t(e.status)}</span></td>
+                  <td title={e.status === 'stale' ? t('staleTip') : e.status === 'outlier' ? t('outlierTip') : undefined}>
+                    <StatusDot status={e.status} />{' '}
+                    {e.status === 'stale' || e.status === 'outlier'
+                      ? <span className="badge warning">{t(e.status)}</span>
+                      : <span style={{ fontSize: 11.5, color: 'var(--text-2)' }}>{t(e.status)}</span>}
+                  </td>
                   <td style={{ color: 'var(--green)' }}><FlashNum value={e.best_bid} /></td>
                   <td style={{ color: 'var(--red)' }}><FlashNum value={e.best_ask} /></td>
                   <td className="num">{e.spread_pct ? e.spread_pct.toFixed(3) + '%' : '—'}</td>
-                  <td className="num" style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                  <td className="num hide-xl" style={{ fontSize: 11, color: 'var(--text-2)' }}>
                     {st.avg != null
                       ? `μ ${st.avg.toFixed(2)} · ${st.min.toFixed(2)}–${st.max.toFixed(2)} · σ ${st.stdev.toFixed(2)}`
                       : '—'}
                   </td>
                   <td className="num">{fmtCompact(e.bid_depth_quote + e.ask_depth_quote)}</td>
-                  <td className="num" style={{ color: e.depth_imbalance > 0 ? 'var(--green)' : 'var(--red)' }}>
+                  <td className="num hide-lg" style={{ color: e.depth_imbalance > 0 ? 'var(--green)' : 'var(--red)' }}>
                     {(e.depth_imbalance * 100).toFixed(0)}%
                   </td>
-                  <td><ScoreBar score={e.liquidity_score} /></td>
+                  <td className="hide-md"><ScoreBar score={e.liquidity_score} /></td>
                   <td className="num" title={e.volume_estimated ? t('volEstimated') : undefined}>
                     {e.volume_estimated && <span style={{ color: 'var(--accent)' }}>≈</span>}
                     {fmtCompact(e.volume_24h_quote)}
                   </td>
-                  <td className="num">{e.taker_fee_pct}%</td>
-                  <td className="num" style={{ color: 'var(--text-3)' }}>
+                  <td className="num hide-lg">{e.taker_fee_pct}%</td>
+                  <td className="num" style={{
+                    color: e.latency_ms > (detail.stale_latency_ms || 2000) ? 'var(--amber)' : 'var(--text-3)' }}>
                     {e.latency_ms ? Math.round(e.latency_ms) + 'ms' : '—'}
                   </td>
                 </tr>
@@ -185,6 +210,7 @@ export default function MarketDetail({ asset, assets, onSelectAsset }) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
 
       <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))' }}>
@@ -214,9 +240,10 @@ export default function MarketDetail({ asset, assets, onSelectAsset }) {
         {/* slippage calculator */}
         <SlippageCalc asset={asset} t={t} />
 
-        {/* arbitrage */}
-        <div className="card" style={{ padding: 0 }}>
+        {/* arbitrage — every venue pair, gross and net-after-fees gap */}
+        <div className="card" style={{ padding: 0, gridColumn: '1 / -1' }}>
           <h3 style={{ padding: '14px 16px 0' }}>{t('arbitrage')}</h3>
+          <div className="tbl-scroll">
           <table className="tbl">
             <thead>
               <tr>
@@ -226,25 +253,34 @@ export default function MarketDetail({ asset, assets, onSelectAsset }) {
               </tr>
             </thead>
             <tbody>
-              {detail.arbitrage.filter((o) => o.net_pct > 0).map((o, i) => (
-                <tr key={i}>
+              {detail.arbitrage.slice(0, arbShowAll ? undefined : 8).map((o, i) => (
+                <tr key={i} style={o.net_pct > 0 ? undefined : { opacity: 0.8 }}>
                   <td><b style={{ color: 'var(--green)' }}>{o.buy_exchange}</b>
-                    <div className="num" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{fmtNum(o.buy_price, 0)}</div>
+                    <span className="num" style={{ fontSize: 11, color: 'var(--text-3)', marginInlineStart: 8 }}>{fmtNum(o.buy_price, 0)}</span>
                   </td>
                   <td><b style={{ color: 'var(--red)' }}>{o.sell_exchange}</b>
-                    <div className="num" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{fmtNum(o.sell_price, 0)}</div>
+                    <span className="num" style={{ fontSize: 11, color: 'var(--text-3)', marginInlineStart: 8 }}>{fmtNum(o.sell_price, 0)}</span>
                   </td>
-                  <td className="num">{o.gross_pct.toFixed(3)}%</td>
-                  <td className="num" style={{ color: 'var(--green)', fontWeight: 700 }}>
-                    {o.net_pct.toFixed(3)}%
+                  <td className="num" style={{ color: o.gross_pct > 0 ? 'var(--text)' : 'var(--text-3)' }}>
+                    {fmtPct(o.gross_pct, 3)}
                   </td>
-                  <td className="num">{o.max_size_base} {asset}</td>
-                  <td className="num">{fmtCompact(o.est_profit_quote)}</td>
+                  <td className="num" style={{ color: o.net_pct > 0 ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>
+                    {fmtPct(o.net_pct, 3)}
+                  </td>
+                  <td className="num">{o.max_size_base > 0 ? `${fmtQty(o.max_size_base, o.max_size_base)} ${asset}` : '—'}</td>
+                  <td className="num">{o.est_profit_quote > 0 ? fmtCompact(o.est_profit_quote) : '—'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {!detail.arbitrage.filter((o) => o.net_pct > 0).length && (
+          </div>
+          {detail.arbitrage.length > 8 && (
+            <div style={{ padding: '8px 16px 12px' }}>
+              <button className="btn ghost sm" onClick={() => setArbShowAll(!arbShowAll)}>
+                {arbShowAll ? t('showLess') : `${t('showAll')} (${detail.arbitrage.length})`}
+              </button>
+            </div>)}
+          {!detail.arbitrage.length && (
             <EmptyState icon={<IconZap />} title={t('noData')} hint={t('arbHint')} />)}
         </div>
       </div>
@@ -261,30 +297,38 @@ function Ladder({ depth, t }) {
   const maxQty = Math.max(...bids.map(([, q]) => q), ...asks.map(([, q]) => q), 1e-12);
   const spreadPct = bids[0] && asks[0]
     ? ((asks[0][0] - bids[0][0]) / asks[0][0] * 100).toFixed(3) : null;
+  // Full price normally; when the card is narrow (container query in CSS)
+  // prices above 1B switch to millions so qty + price still fit half a card.
+  const fmtP = (p) => (
+    <>
+      <span className="p-full">{fmtNum(p, 0)}</span>
+      <span className="p-short">{p >= 1e9 ? fmtNum(p / 1e6, 2) + 'M' : fmtNum(p, 0)}</span>
+    </>
+  );
   return (
     <div>
       <div className="ladder">
         <div>
-          <div className="ladder-head" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div className="ladder-head">
             <span>{t('qty')}</span><span style={{ color: 'var(--green)' }}>{t('bid')}</span>
           </div>
           {bids.map(([p, q], i) => (
-            <div key={i} className="ladder-row bid">
+            <div key={i} className="ladder-row bid" title={`${fmtNum(p, 0)} × ${q}`}>
               <span className="bar" style={{ width: `${(q / maxQty) * 100}%` }} />
-              <span style={{ color: 'var(--text-2)' }}>{q.toFixed(4)}</span>
-              <span style={{ color: 'var(--green)' }}>{fmtNum(p, 0)}</span>
+              <span style={{ color: 'var(--text-2)' }}>{fmtQty(q, maxQty)}</span>
+              <span style={{ color: 'var(--green)' }}>{fmtP(p)}</span>
             </div>
           ))}
         </div>
         <div>
-          <div className="ladder-head" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div className="ladder-head">
             <span style={{ color: 'var(--red)' }}>{t('ask')}</span><span>{t('qty')}</span>
           </div>
           {asks.map(([p, q], i) => (
-            <div key={i} className="ladder-row ask">
+            <div key={i} className="ladder-row ask" title={`${fmtNum(p, 0)} × ${q}`}>
               <span className="bar" style={{ width: `${(q / maxQty) * 100}%` }} />
-              <span style={{ color: 'var(--red)' }}>{fmtNum(p, 0)}</span>
-              <span style={{ color: 'var(--text-2)' }}>{q.toFixed(4)}</span>
+              <span style={{ color: 'var(--red)' }}>{fmtP(p)}</span>
+              <span style={{ color: 'var(--text-2)' }}>{fmtQty(q, maxQty)}</span>
             </div>
           ))}
         </div>
@@ -312,7 +356,21 @@ function SlippageCalc({ asset, t }) {
     return () => clearTimeout(id);
   }, [asset, sizeB]);
 
-  const best = rows?.find((r) => r.buy_impact_pct != null);
+  // Best venue per side: lowest impact among venues that can fill that side.
+  // A "too thin" side is never best.
+  const bestOf = (key) => (rows || []).filter((r) => r[key] != null)
+    .reduce((a, b) => (!a || b[key] < a[key] ? b : a), null)?.exchange;
+  const bestBuy = bestOf('buy_impact_pct');
+  const bestSell = bestOf('sell_impact_pct');
+  const impactCell = (pct, price, isBest) => (
+    <td className="num" style={{
+      color: pct == null ? 'var(--red)' : pct >= 0.5 ? 'var(--amber)' : 'var(--green)' }}>
+      {pct == null ? t('bookTooThin') : pct.toFixed(3) + '%'}
+      {isBest && <span className="badge info" style={{ marginInlineStart: 6 }}>{t('best')}</span>}
+      {price != null && (
+        <div style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{fmtNum(price, 0)}</div>)}
+    </td>
+  );
 
   return (
     <div className="card">
@@ -327,34 +385,24 @@ function SlippageCalc({ asset, t }) {
                style={{ maxWidth: 110 }}
                onChange={(e) => setSizeB(+e.target.value || 0.1)} />
       </label>
+      <div className="tbl-scroll">
       <table className="tbl">
         <thead><tr>
-          <th>{t('exchange')}</th><th>{t('buyImpact')}</th><th>{t('sellImpact')}</th><th>{t('effPrice')}</th>
+          <th>{t('exchange')}</th>
+          <th title={t('effPrice')}>{t('buyImpact')}</th>
+          <th title={t('effPrice')}>{t('sellImpact')}</th>
         </tr></thead>
         <tbody>
           {(rows || []).map((r) => (
-            <tr key={r.exchange}
-                style={best && r.exchange === best.exchange ? { background: 'var(--accent-glow)' } : undefined}>
-              <td>
-                <b>{r.exchange}</b>
-                {best && r.exchange === best.exchange &&
-                  <span className="badge info" style={{ marginInlineStart: 6 }}>{t('bestVenue')}</span>}
-              </td>
-              <td className="num" style={{
-                color: r.buy_impact_pct == null ? 'var(--red)'
-                     : r.buy_impact_pct >= 0.5 ? 'var(--amber)' : 'var(--green)' }}>
-                {r.buy_impact_pct == null ? t('bookTooThin') : r.buy_impact_pct.toFixed(3) + '%'}
-              </td>
-              <td className="num" style={{
-                color: r.sell_impact_pct == null ? 'var(--red)'
-                     : r.sell_impact_pct >= 0.5 ? 'var(--amber)' : 'var(--green)' }}>
-                {r.sell_impact_pct == null ? t('bookTooThin') : r.sell_impact_pct.toFixed(3) + '%'}
-              </td>
-              <td className="num">{r.buy_price ? fmtNum(r.buy_price, 0) : '—'}</td>
+            <tr key={r.exchange}>
+              <td><b>{r.exchange}</b></td>
+              {impactCell(r.buy_impact_pct, r.buy_price, r.exchange === bestBuy)}
+              {impactCell(r.sell_impact_pct, r.sell_price, r.exchange === bestSell)}
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
       {rows && !rows.length && <EmptyState title={t('noData')} />}
     </div>
   );

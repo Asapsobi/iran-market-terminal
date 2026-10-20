@@ -52,3 +52,20 @@ def test_premium_series_join():
     assert len(series) >= 9
     assert all(abs(p["premium_pct"] - 5.0) < 0.05 for p in series)
     assert abs(series[0]["implied_usd"] - 105_000) < 1
+
+
+def test_premium_sanity_guard_hides_absurd_values():
+    from app.premium import sane_premium
+    assert sane_premium(3.2, "BTC") == 3.2
+    assert sane_premium(-19.9, "BTC") == -19.9
+    assert sane_premium(258956.0, "GRAM") is None
+    assert sane_premium(None, "X") is None
+
+
+def test_clean_base_strips_quote():
+    from app.aggregator import clean_base
+    assert clean_base("USOON/TMN") == "USOON"
+    assert clean_base("btc-irt") == "BTC"
+    assert clean_base("DOGEIRT") == "DOGE"
+    assert clean_base("USDT") == "USDT"
+    assert clean_base("../x") == ""
